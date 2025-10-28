@@ -1,0 +1,4 @@
+this app can run on wine-10.7-staging-tk
+Default ge 8-26 will throw errors due to not having a specific dll
+
+thanks to KEIRO for providing this info!
