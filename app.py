@@ -18,7 +18,6 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-customtkinter.set_appearance_mode("System")
 customtkinter.set_default_color_theme("blue")
 
 USER_DATA_FILE = "user_data.json"
@@ -452,6 +451,7 @@ class App(customtkinter.CTk):
         self.grid_display_mode_var = customtkinter.StringVar(value="Personal Best")
         self.highlight_mode_var, self.show_decimals_var = customtkinter.StringVar(value="Performance Drop"), customtkinter.StringVar(value="Off")
         self.cell_height_var = customtkinter.StringVar(value="28")
+        self.appearance_mode_var = customtkinter.StringVar(value="System") # --- ADDED ---
         self.font_size_var = customtkinter.StringVar(value="12")
         
         self.target_score_var = customtkinter.StringVar(value="3000")
@@ -461,7 +461,9 @@ class App(customtkinter.CTk):
         self.hidden_scenarios, self.hidden_cms = set(), set()
         self.graph_hide_settings = {}
         self.tooltip_instances = []
-        self.load_user_data()
+
+        self.load_user_data() # Load user data first
+        customtkinter.set_appearance_mode(self.appearance_mode_var.get()) # Apply theme before creating widgets
         
         self.title("iyo's Variant Stats Viewer co-developed with Gemini")
         if hasattr(self, 'saved_geometry') and self.saved_geometry:
@@ -469,9 +471,10 @@ class App(customtkinter.CTk):
         else:
             self.geometry("1400x950")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1); self.grid_columnconfigure(0, weight=1)
         self.bind("<F5>", lambda event: self.load_stats_thread())
-        self.top_frame = customtkinter.CTkFrame(self, corner_radius=0); self.top_frame.grid(row=0, column=0, sticky="nsew"); self.top_frame.grid_columnconfigure(0, weight=1)
+        self.top_frame = customtkinter.CTkFrame(self, corner_radius=0); self.top_frame.grid(row=0, column=0, sticky="new"); self.top_frame.grid_columnconfigure(0, weight=1)
         self.bottom_frame = customtkinter.CTkFrame(self); self.bottom_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10); self.bottom_frame.grid_columnconfigure(0, weight=1); self.bottom_frame.grid_rowconfigure(1, weight=1)
         self.rating_frame = customtkinter.CTkFrame(self.bottom_frame); self.rating_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 5)); self.rating_frame.grid_columnconfigure(0, weight=1)
         self.rating_label = customtkinter.CTkLabel(self.rating_frame, text="Rating: -", font=("Arial", 24, "bold")); self.rating_label.grid(row=0, column=0, pady=10); self.rating_frame.grid_remove()
@@ -484,6 +487,7 @@ class App(customtkinter.CTk):
             try:
                 with open(USER_DATA_FILE, 'r') as f: data = json.load(f)
                 self.saved_geometry = data.get("window_geometry")
+                self.appearance_mode_var.set(data.get("appearance_mode", "System")) # --- ADDED ---
                 self.favorites = [{"name": fav, "axis": ""} if isinstance(fav, str) else fav for fav in data.get("favorites", [])]
                 self.recents = [{"name": rec, "axis": ""} if isinstance(rec, str) else rec for rec in data.get("recents", [])]
                 self.sens_filter_var.set(data.get("sens_filter_preference", "All"))
@@ -516,6 +520,7 @@ class App(customtkinter.CTk):
                 if not self.format_filter_preferences.get(current_scenario): del self.format_filter_preferences[current_scenario]
         data_to_save = {
             "window_geometry": self.geometry(),
+            "appearance_mode": self.appearance_mode_var.get(), # --- ADDED ---
             "favorites": self.favorites, "recents": self.recents, "sens_filter_preference": self.sens_filter_var.get(), 
             "grid_display_mode_preference": self.grid_display_mode_var.get(),
             "highlight_mode_preference": self.highlight_mode_var.get(), "show_decimals_preference": self.show_decimals_var.get(),
@@ -747,7 +752,12 @@ class App(customtkinter.CTk):
         misc_group.grid_columnconfigure(0, weight=1)
         top_misc_frame = customtkinter.CTkFrame(misc_group, fg_color="transparent")
         top_misc_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
-        customtkinter.CTkSwitch(top_misc_frame, text="Show Decimals", variable=self.show_decimals_var, onvalue="On", offvalue="Off", command=self.on_display_option_change).pack(side="left")
+        # --- MODIFIED: Added theme selector ---
+        theme_frame = customtkinter.CTkFrame(top_misc_frame, fg_color="transparent")
+        theme_frame.pack(side="left", padx=(0,10))
+        customtkinter.CTkLabel(theme_frame, text="Theme:").pack(side="left", padx=(0,5))
+        customtkinter.CTkOptionMenu(theme_frame, variable=self.appearance_mode_var, values=["System", "Dark", "Light"], command=self.on_appearance_mode_change, width=90).pack(side="left")
+        customtkinter.CTkSwitch(top_misc_frame, text="Show Decimals", variable=self.show_decimals_var, onvalue="On", offvalue="Off", command=self.on_display_option_change).pack(side="left", padx=(10,0))
         customtkinter.CTkButton(top_misc_frame, text="Manage Hidden", command=self.open_manage_hidden_window).pack(side="right")
         bottom_misc_frame = customtkinter.CTkFrame(misc_group, fg_color="transparent")
         bottom_misc_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0,5))
@@ -762,8 +772,13 @@ class App(customtkinter.CTk):
 
         self.filters_frame = customtkinter.CTkFrame(self.main_controls_content); self.filters_frame.grid(row=2, column=0, sticky="ew", pady=(5,0)); self.format_filter_frame = customtkinter.CTkFrame(self.main_controls_content); self.format_filter_frame.grid(row=3, column=0, sticky="ew", pady=(0,5))
         
-        analysis_modes_frame = customtkinter.CTkFrame(self.top_frame); analysis_modes_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(5,5))
+        # This is where we create the "Grid Display Mode / Highlight Mode" section
+        analysis_modes_frame = customtkinter.CTkFrame(self.top_frame)
+        analysis_modes_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(5,5))
         analysis_modes_frame.grid_columnconfigure((0, 1), weight=1)
+
+        # THIS IS THE FIX: We tell the top_frame grid how to handle empty space
+        self.top_frame.grid_rowconfigure(4, weight=1)
 
         grid_mode_frame = customtkinter.CTkFrame(analysis_modes_frame); grid_mode_frame.grid(row=0, column=0, sticky="ew", padx=(0,5))
         customtkinter.CTkLabel(grid_mode_frame, text="Grid Display Mode:").pack(side="left", padx=(10,5), pady=5)
@@ -810,6 +825,14 @@ class App(customtkinter.CTk):
         if hasattr(self, 'target_score_entry'):
             if self.highlight_mode_var.get() == "Target Score": self.target_score_entry.pack(side="left", padx=(0,10), pady=5)
             else: self.target_score_entry.pack_forget()
+        self.save_user_data(); self.display_grid_data()
+
+    def on_appearance_mode_change(self, new_mode):
+        customtkinter.set_appearance_mode(new_mode)
+        # Redraw any open graph windows to match the new theme
+        for child in self.winfo_children():
+            if isinstance(child, GraphWindow):
+                child.redraw_plot()
         self.save_user_data(); self.display_grid_data()
         
     def load_stats_thread(self):
