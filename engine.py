@@ -5,7 +5,7 @@ import re
 import json
 from datetime import datetime, time, timedelta
 
-CACHE_DF_PATH = 'kovaaks_cache.parquet'
+# --- MODIFIED: Removed obsolete PB cache path ---
 CACHE_HISTORY_PATH = 'kovaaks_history_cache.parquet'
 CACHE_INFO_PATH = 'kovaaks_cache_info.json'
 
@@ -31,10 +31,8 @@ def parse_kovaaks_stats_file(file_path):
             elif line.startswith('Horiz Sens:'): data['Sens'] = float(line.split(',')[1].strip())
             elif line.startswith('Challenge Start:'): start_time_str = line.split(',')[1].strip()
         
-        # Calculate precise duration if possible
         if start_time_str:
             try:
-                # KovaaK's time can have more than 6 microsecond digits, which python strptime fails on
                 if '.' in start_time_str and len(start_time_str.split('.')[1]) > 6:
                     start_time_str = start_time_str[:start_time_str.find('.')+7]
                 
@@ -42,12 +40,10 @@ def parse_kovaaks_stats_file(file_path):
                 start_time = end_time.replace(hour=parsed_time.hour, minute=parsed_time.minute, 
                                               second=parsed_time.second, microsecond=parsed_time.microsecond)
                 
-                # Handle midnight crossing, e.g., starts at 23:59, ends at 00:01
                 if start_time > end_time:
                     start_time -= timedelta(days=1)
                 
                 duration_seconds = (end_time - start_time).total_seconds()
-                # Sanity check: cap duration at 10 minutes to avoid absurd values from clock changes
                 if 0 < duration_seconds < 600:
                     data['Duration'] = duration_seconds
             except ValueError:
@@ -76,7 +72,7 @@ def _detect_and_assign_sessions(history_df, session_gap_minutes=30):
 
 def find_and_process_stats(stats_folder_path, session_gap_minutes=30):
     path_obj = Path(stats_folder_path)
-    if not path_obj.is_dir(): return None, None
+    if not path_obj.is_dir(): return None
     processed_files_info = {}
     cached_history_df = pd.DataFrame()
     if os.path.exists(CACHE_HISTORY_PATH) and os.path.exists(CACHE_INFO_PATH):
@@ -89,6 +85,7 @@ def find_and_process_stats(stats_folder_path, session_gap_minutes=30):
         except Exception as e:
             print(f"Could not load cache, performing full scan. Error: {e}")
             processed_files_info, cached_history_df = {}, pd.DataFrame()
+            
     all_challenge_files = list(path_obj.glob('*- Challenge -*.csv'))
     new_files_to_process = []
     current_files_info = {}
@@ -99,11 +96,11 @@ def find_and_process_stats(stats_folder_path, session_gap_minutes=30):
             if str(file_path) not in processed_files_info or mtime > processed_files_info[str(file_path)]:
                 new_files_to_process.append(file_path)
         except FileNotFoundError: continue
+        
     print(f"---- STARTING SCAN ---- Found {len(all_challenge_files)} total files.")
     print(f"Found {len(new_files_to_process)} new files to process.")
-    data_changed = False
+
     if new_files_to_process:
-        data_changed = True
         newly_parsed_data = [d for d in (parse_kovaaks_stats_file(fp) for fp in new_files_to_process) if d]
         if newly_parsed_data:
             new_df = pd.DataFrame(newly_parsed_data)
@@ -111,18 +108,21 @@ def find_and_process_stats(stats_folder_path, session_gap_minutes=30):
             combined_history_df.drop_duplicates(subset=['Scenario', 'Sens', 'Timestamp', 'Score'], inplace=True)
         else: combined_history_df = cached_history_df
     else: combined_history_df = cached_history_df
-    if combined_history_df.empty: return pd.DataFrame(), pd.DataFrame()
+        
+    if combined_history_df.empty: return pd.DataFrame()
     
+    # --- MODIFIED: The function now only processes and returns the full history ---
+    # No more PB-only dataframe. The app will handle aggregations.
     combined_history_df = _detect_and_assign_sessions(combined_history_df, session_gap_minutes)
 
-    df_max_scores = combined_history_df.loc[combined_history_df.groupby(['Scenario', 'Sens'])['Score'].idxmax()]
     try:
-        df_max_scores.to_parquet(CACHE_DF_PATH)
+        # --- MODIFIED: Removed caching of the obsolete PB-only dataframe ---
         combined_history_df.to_parquet(CACHE_HISTORY_PATH)
         with open(CACHE_INFO_PATH, 'w') as f: json.dump(current_files_info, f, indent=2)
         print("---- Caches updated successfully ----")
     except Exception as e: print(f"Error saving cache: {e}")
-    return df_max_scores.reset_index(drop=True), combined_history_df.reset_index(drop=True)
+        
+    return combined_history_df.reset_index(drop=True)
 
 def aggregate_data(df, period):
     if df.empty:
@@ -137,21 +137,32 @@ def aggregate_data(df, period):
         agg = df_resample['Score'].resample(period).mean().dropna()
         return agg.reset_index()
 
-def get_scenario_family_info(master_df, base_scenario):
-    if master_df is None or master_df.empty: return None
-    family_df = master_df[master_df['Scenario'].str.startswith(base_scenario)].copy()
+def get_scenario_family_info(all_runs_df, base_scenario):
+    if all_runs_df is None or all_runs_df.empty: return None
+    # This now operates on all runs, not just PBs.
+    family_df = all_runs_df[all_runs_df['Scenario'].str.startswith(base_scenario)].copy()
     if family_df.empty: return None
+    
+    # Memoization cache
+    memo = {}
+
     def parse_modifiers(scenario_name):
+        if scenario_name in memo:
+            return memo[scenario_name]
+
         modifier_str = scenario_name.replace(base_scenario, '', 1).strip()
         if not modifier_str: return {}
+        
         UNIT_MAP = {'s': 'Duration', 'sec': 'Duration', 'm': 'Distance', 'hp': 'Health'}
         token_pattern = re.compile(r'(\d[\d.]*%?[a-zA-Z]*|[A-Za-z]+)')
         tokens = token_pattern.findall(modifier_str)
+        
         def is_value(token):
             if re.fullmatch(r'[\d.]+%?', token): return True
             unit_match = re.fullmatch(r'([\d.]+%?)(\w+)', token)
             if unit_match and unit_match.groups()[1] in UNIT_MAP: return True
             return False
+            
         modifiers = {}
         consumed = [False] * len(tokens); i = 0
         while i < len(tokens) - 1:
@@ -166,35 +177,15 @@ def get_scenario_family_info(master_df, base_scenario):
                 if unit_match:
                     value, unit = unit_match.groups()
                     if unit in UNIT_MAP: modifiers[UNIT_MAP[unit]] = (token, 'standalone'); consumed[i] = True
-        if not all(consumed): return {}
+        if not all(consumed):
+             memo[scenario_name] = {}
+             return {}
+        memo[scenario_name] = modifiers
         return modifiers
+        
     family_df['Modifiers'] = family_df['Scenario'].apply(parse_modifiers)
     return family_df
 
-def analyze_variants(family_df, base_scenario, variable_axis, fixed_filters={}, pattern_filter=None):
-    if family_df is None or family_df.empty: return pd.DataFrame()
-    if variable_axis is None:
-        grid_df = family_df.pivot_table(index='Scenario', columns='Sens', values='Score')
-        grid_df['BEST Score'], grid_df['BEST CM'], grid_df['% vs Base'] = grid_df.max(axis=1), grid_df.idxmax(axis=1), '100.0%'
-        return grid_df.sort_index()
-    filtered_rows = []
-    for _, row in family_df.iterrows():
-        modifiers, is_base_scenario = row['Modifiers'], row['Scenario'] == base_scenario
-        if not is_base_scenario and variable_axis not in modifiers: continue
-        if not is_base_scenario and not modifiers: continue
-        if pattern_filter and variable_axis in pattern_filter and not is_base_scenario:
-            if modifiers[variable_axis][1] not in pattern_filter[variable_axis]: continue
-        temp_modifiers_for_check = {k: v[0] for k, v in modifiers.items()}
-        allowed_keys = set(fixed_filters.keys()) | {variable_axis}
-        if not set(temp_modifiers_for_check.keys()).issubset(allowed_keys): continue
-        match = all(temp_modifiers_for_check.get(key) == value for key, value in fixed_filters.items())
-        if match: filtered_rows.append(row)
-    if not filtered_rows: return pd.DataFrame()
-    display_df = pd.DataFrame(filtered_rows)
-    grid_df = display_df.pivot_table(index='Scenario', columns='Sens', values='Score')
-    base_scores = display_df[display_df['Scenario'] == base_scenario]['Score']
-    base_best_score = base_scores.max() if not base_scores.empty else 1.0
-    if base_best_score == 0: base_best_score = 1.0
-    grid_df['BEST Score'], grid_df['BEST CM'] = grid_df.max(axis=1), grid_df.idxmax(axis=1)
-    grid_df['% vs Base'] = (grid_df['BEST Score'] / base_best_score * 100).round(1).astype(str) + '%'
-    return grid_df.sort_index()
+# --- REMOVED: analyze_variants function is now obsolete ---
+# All its logic for pivoting and analysis has been moved into app.py
+# to work dynamically with the new display modes.

@@ -12,6 +12,7 @@ import json
 import numpy as np
 import itertools
 from datetime import timedelta
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -22,7 +23,49 @@ customtkinter.set_default_color_theme("blue")
 
 USER_DATA_FILE = "user_data.json"
 
-# --- NEW WINDOW CLASS: SessionHistoryWindow ---
+# --- HELPER CLASS: Tooltip ---
+class Tooltip:
+    def __init__(self, widget, text_func, bg="#242424", fg="white", delay=400):
+        self.widget = widget
+        self.text_func = text_func
+        self.bg = bg
+        self.fg = fg
+        self.delay = delay
+        self.tooltip_window = None
+        self.id = None
+        self.widget.bind("<Enter>", self.schedule_tip)
+        self.widget.bind("<Leave>", self.hide_tip)
+        self.widget.bind("<ButtonPress>", self.hide_tip)
+
+    def schedule_tip(self, event=None):
+        self.id = self.widget.after(self.delay, self.show_tip)
+
+    def show_tip(self, event=None):
+        if self.tooltip_window: return
+        text = self.text_func()
+        if not text: return
+        
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        
+        self.tooltip_window = tkinter.Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True)
+        self.tooltip_window.wm_geometry(f"+{x}+{y}")
+        
+        label = tkinter.Label(self.tooltip_window, text=text, justify='left',
+                              background=self.bg, foreground=self.fg, relief='solid', borderwidth=1,
+                              font=("Arial", 10, "normal"), padx=8, pady=5)
+        label.pack(ipadx=1)
+
+    def hide_tip(self, event=None):
+        if self.id:
+            self.widget.after_cancel(self.id)
+            self.id = None
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+
+# --- WINDOW CLASS: SessionHistoryWindow ---
 class SessionHistoryWindow(customtkinter.CTkToplevel):
     def __init__(self, master, session_list):
         super().__init__(master)
@@ -53,9 +96,6 @@ class SessionHistoryWindow(customtkinter.CTkToplevel):
             info_label = customtkinter.CTkLabel(card, text=info_text, font=customtkinter.CTkFont(size=12), anchor="w")
             info_label.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=(0,5))
             
-            # --- FIX: MODIFIED ---
-            # The lambda now accepts the 'event' object passed by .bind() but ignores it,
-            # correctly passing the intended session id ('sid') to the report function.
             command = lambda event, sid=session['id']: self.app_master.open_session_report(session_id=sid)
             card.bind("<Button-1>", command)
             date_label.bind("<Button-1>", command)
@@ -71,11 +111,10 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
         
-        self.app_master = master # Store reference to main app
+        self.app_master = master
         self.header_metrics = header_metrics
         self.report_data = report_data
 
-        # --- Part 1: Header Metrics ---
         header_frame = customtkinter.CTkFrame(self, fg_color=("gray85", "gray20"))
         header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         header_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
@@ -96,7 +135,6 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         create_metric_display(header_frame, "Total Plays", "", self.total_plays_var).grid(row=0, column=3, pady=10)
         create_metric_display(header_frame, "Total PBs", "", self.total_pbs_var).grid(row=0, column=4, pady=10)
         
-        # --- Part 2: Control Panel ---
         control_frame = customtkinter.CTkFrame(self)
         control_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         control_frame.grid_columnconfigure(1, weight=1)
@@ -115,7 +153,6 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         for text, value in sort_options.items():
             customtkinter.CTkRadioButton(sort_frame, text=text, variable=self.sort_var, value=value, command=self._redraw_report).pack(side="left", padx=5)
 
-        # --- Part 3: Main Content ---
         self.scroll_frame = customtkinter.CTkScrollableFrame(self)
         self.scroll_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.scroll_frame.grid_columnconfigure(0, weight=1)
@@ -197,7 +234,6 @@ class SessionReportWindow(customtkinter.CTkToplevel):
             customtkinter.CTkLabel(stats_frame, text=perf_str, font=customtkinter.CTkFont(weight="bold"), text_color=perf_color, anchor="e").grid(row=0, column=2, sticky="ew", padx=5)
 
 class GraphWindow(customtkinter.CTkToplevel):
-    # This class remains unchanged
     def __init__(self, master, full_data, hide_settings, save_callback, graph_id, title):
         super().__init__(master)
         self.title(title)
@@ -409,20 +445,29 @@ class App(customtkinter.CTk):
     def __init__(self):
         super().__init__()
         self.is_first_load = True
-        self.master_df, self.full_history_df, self.scenario_list = None, None, []
-        self.results_table, self.current_family_info, self.current_unfiltered_grid_data = None, None, None
+        self.all_runs_df, self.scenario_list = None, []
+        self.results_table, self.current_family_runs, self.current_summary_data = None, None, None
+        
         self.variable_axis_var, self.sens_filter_var = customtkinter.StringVar(), customtkinter.StringVar(value="All")
+        self.grid_display_mode_var = customtkinter.StringVar(value="Personal Best")
         self.highlight_mode_var, self.show_decimals_var = customtkinter.StringVar(value="Performance Drop"), customtkinter.StringVar(value="Off")
+        self.cell_height_var = customtkinter.StringVar(value="28")
+        self.font_size_var = customtkinter.StringVar(value="12")
+        
         self.target_score_var = customtkinter.StringVar(value="3000")
         self.session_gap_minutes_var = customtkinter.StringVar(value="30")
         self.target_scores_by_scenario, self.format_filter_vars, self.format_filter_preferences = {}, {}, {}
         self.favorites, self.recents, self.collapsed_states = [], [], {}
         self.hidden_scenarios, self.hidden_cms = set(), set()
         self.graph_hide_settings = {}
+        self.tooltip_instances = []
         self.load_user_data()
         
         self.title("iyo's Variant Stats Viewer co-developed with Gemini")
-        self.geometry("1400x950")
+        if hasattr(self, 'saved_geometry') and self.saved_geometry:
+            self.geometry(self.saved_geometry)
+        else:
+            self.geometry("1400x950")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.grid_rowconfigure(1, weight=1); self.grid_columnconfigure(0, weight=1)
         self.bind("<F5>", lambda event: self.load_stats_thread())
@@ -434,16 +479,19 @@ class App(customtkinter.CTk):
         self.set_default_path()
         self.after(100, self.load_stats_thread)
     
-    # ... (unchanged methods from load_user_data to perform_load) ...
     def load_user_data(self):
         if os.path.exists(USER_DATA_FILE):
             try:
                 with open(USER_DATA_FILE, 'r') as f: data = json.load(f)
+                self.saved_geometry = data.get("window_geometry")
                 self.favorites = [{"name": fav, "axis": ""} if isinstance(fav, str) else fav for fav in data.get("favorites", [])]
                 self.recents = [{"name": rec, "axis": ""} if isinstance(rec, str) else rec for rec in data.get("recents", [])]
                 self.sens_filter_var.set(data.get("sens_filter_preference", "All"))
+                self.grid_display_mode_var.set(data.get("grid_display_mode_preference", "Personal Best"))
                 self.highlight_mode_var.set(data.get("highlight_mode_preference", "Performance Drop"))
                 self.show_decimals_var.set(data.get("show_decimals_preference", "Off"))
+                self.cell_height_var.set(str(data.get("cell_height_preference", "28")))
+                self.font_size_var.set(str(data.get("font_size_preference", "12")))
                 self.session_gap_minutes_var.set(str(data.get("session_gap_minutes", "30")))
                 self.target_scores_by_scenario = data.get("target_scores_by_scenario", {})
                 self.collapsed_states = data.get("collapsed_states", {})
@@ -467,8 +515,11 @@ class App(customtkinter.CTk):
                 elif variable_axis in self.format_filter_preferences.get(current_scenario, {}): del self.format_filter_preferences[current_scenario][variable_axis]
                 if not self.format_filter_preferences.get(current_scenario): del self.format_filter_preferences[current_scenario]
         data_to_save = {
+            "window_geometry": self.geometry(),
             "favorites": self.favorites, "recents": self.recents, "sens_filter_preference": self.sens_filter_var.get(), 
+            "grid_display_mode_preference": self.grid_display_mode_var.get(),
             "highlight_mode_preference": self.highlight_mode_var.get(), "show_decimals_preference": self.show_decimals_var.get(),
+            "cell_height_preference": self.cell_height_var.get(), "font_size_preference": self.font_size_var.get(),
             "session_gap_minutes": self.session_gap_minutes_var.get(),
             "target_scores_by_scenario": self.target_scores_by_scenario, "collapsed_states": self.collapsed_states, 
             "hidden_scenarios": list(self.hidden_scenarios), "hidden_cms": list(self.hidden_cms), 
@@ -478,14 +529,14 @@ class App(customtkinter.CTk):
         with open(USER_DATA_FILE, 'w') as f: json.dump(data_to_save, f, indent=2)
 
     def on_cell_click(self, event, scenario_name, sensitivity):
-        if self.full_history_df is None or self.full_history_df.empty: return
+        if self.all_runs_df is None or self.all_runs_df.empty: return
         sensitivity = float(sensitivity)
         graph_id = f"{scenario_name}|{sensitivity}"
         if graph_id not in self.graph_hide_settings:
             self.graph_hide_settings[graph_id] = {}
         hide_settings_for_graph = self.graph_hide_settings[graph_id]
         
-        history_data = self.full_history_df[(self.full_history_df['Scenario'] == scenario_name) & (self.full_history_df['Sens'] == sensitivity)].copy()
+        history_data = self.all_runs_df[(self.all_runs_df['Scenario'] == scenario_name) & (self.all_runs_df['Sens'] == sensitivity)].copy()
         history_data.sort_values(by='Timestamp', inplace=True)
         if history_data.empty:
             msg_win = customtkinter.CTkToplevel(self); msg_win.transient(self); msg_win.title("Info"); msg_win.geometry("300x100")
@@ -496,14 +547,14 @@ class App(customtkinter.CTk):
         GraphWindow(self, full_data=history_data, hide_settings=hide_settings_for_graph, save_callback=self.save_user_data, graph_id=graph_id, title=title)
         
     def on_scenario_name_click(self, event, scenario_name):
-        if self.full_history_df is None or self.full_history_df.empty: return
+        if self.all_runs_df is None or self.all_runs_df.empty: return
         
         graph_id = f"{scenario_name}|ALL"
         if graph_id not in self.graph_hide_settings:
             self.graph_hide_settings[graph_id] = {}
         hide_settings_for_graph = self.graph_hide_settings[graph_id]
         
-        history_data = self.full_history_df[self.full_history_df['Scenario'] == scenario_name].copy()
+        history_data = self.all_runs_df[self.all_runs_df['Scenario'] == scenario_name].copy()
         history_data.sort_values(by='Timestamp', inplace=True)
         
         if history_data.empty:
@@ -534,17 +585,20 @@ class App(customtkinter.CTk):
         self.status_label = customtkinter.CTkLabel(status_frame, text="Ready. Select stats folder and click 'Load Stats'.", anchor="w"); self.status_label.pack(side="left", padx=(0,10))
         self.progress_bar = customtkinter.CTkProgressBar(self.path_frame, mode='indeterminate')
 
-    def on_load_complete(self, data_tuple):
+    def on_load_complete(self, all_runs_df):
         self.progress_bar.grid_remove()
         if not hasattr(self, 'main_controls_content'): self._build_main_ui_controls()
-        result_df, history_df = (None, None) if data_tuple is None else data_tuple
         
-        if result_df is not None and not result_df.empty and history_df is not None and 'Duration' in history_df.columns:
-            self.master_df, self.full_history_df = result_df, history_df
-            unique_scenarios = self.master_df['Scenario'].unique()
-            base_scenarios = {s for s in unique_scenarios if any(s != other and s in other for other in unique_scenarios)}
-            self.scenario_list = sorted(list(base_scenarios.union(unique_scenarios)))
-            self.status_label.configure(text=f"Loaded {len(self.master_df)} combos. Ready to search.")
+        if all_runs_df is not None and not all_runs_df.empty and 'Duration' in all_runs_df.columns:
+            self.all_runs_df = all_runs_df
+            unique_scenarios = self.all_runs_df['Scenario'].unique()
+            
+            potential_bases = {s for s in unique_scenarios if any(other.startswith(s + ' ') for other in unique_scenarios)}
+            base_scenarios = {b for b in potential_bases if not any(b.startswith(p + ' ') for p in potential_bases)}
+            standalone_scenarios = {s for s in unique_scenarios if not any(s.startswith(b + ' ') for b in base_scenarios)}
+            self.scenario_list = sorted(list(base_scenarios.union(standalone_scenarios)))
+
+            self.status_label.configure(text=f"Loaded {len(self.all_runs_df)} total runs. Ready to search.")
             self.scenario_entry.configure(state="normal")
             self.session_report_button.configure(state="normal")
             self.session_history_button.configure(state="normal")
@@ -558,9 +612,9 @@ class App(customtkinter.CTk):
                         if not self.main_controls_content.winfo_viewable(): self.main_controls_content.toggle_function()
             else: self.update_grid()
         else:
-            if result_df is None: self.status_label.configure(text="Load failed or no data found.")
+            if all_runs_df is None: self.status_label.configure(text="Load failed or no data found.")
             else: self.status_label.configure(text="Data loaded, but is missing 'Duration'. Please Refresh Stats (F5).")
-            self.master_df, self.full_history_df, self.scenario_list = None, None, []
+            self.all_runs_df, self.scenario_list = None, []
             self.session_report_button.configure(state="disabled")
             self.session_history_button.configure(state="disabled")
         self.load_button.configure(state="normal"); self.select_path_button.configure(state="normal")
@@ -573,12 +627,11 @@ class App(customtkinter.CTk):
         return f'{hours:02}:{minutes:02}:{seconds:02}'
         
     def open_session_history(self):
-        if self.full_history_df is None or self.full_history_df.empty or 'SessionID' not in self.full_history_df.columns:
+        if self.all_runs_df is None or self.all_runs_df.empty or 'SessionID' not in self.all_runs_df.columns:
             return
 
         summary_list = []
-        # Use groupby for efficient aggregation
-        for session_id, group in self.full_history_df.groupby('SessionID'):
+        for session_id, group in self.all_runs_df.groupby('SessionID'):
             start_time = group['Timestamp'].min()
             summary = {
                 "id": session_id,
@@ -592,33 +645,28 @@ class App(customtkinter.CTk):
         summary_list.sort(key=lambda x: x['id'], reverse=True)
         SessionHistoryWindow(self, summary_list)
 
-    # --- REFACTOR: MODIFIED ---
-    # This method is now a lightweight launcher that starts the report calculation in a background thread.
     def open_session_report(self, event=None, session_id=None):
-        if self.full_history_df is None or self.full_history_df.empty:
+        if self.all_runs_df is None or self.all_runs_df.empty:
             return
         
         self.status_label.configure(text="Calculating session report...")
-        # Run the heavy calculation in a separate thread to avoid freezing the UI
         thread = threading.Thread(target=self._calculate_and_show_report, args=(session_id,))
         thread.daemon = True
         thread.start()
 
-    # --- REFACTOR: NEW METHOD ---
-    # This method contains all the heavy data processing and runs in the background.
     def _calculate_and_show_report(self, session_id):
         try:
-            if self.full_history_df is None or 'SessionID' not in self.full_history_df.columns:
+            if self.all_runs_df is None or 'SessionID' not in self.all_runs_df.columns:
                 return
 
             if session_id is None:
-                session_id = self.full_history_df['SessionID'].max()
+                session_id = self.all_runs_df['SessionID'].max()
             
-            session_df = self.full_history_df[self.full_history_df['SessionID'] == session_id].copy()
+            session_df = self.all_runs_df[self.all_runs_df['SessionID'] == session_id].copy()
             if session_df.empty: return
 
             session_start_time = session_df['Timestamp'].min()
-            history_before_session = self.full_history_df[self.full_history_df['Timestamp'] < session_start_time]
+            history_before_session = self.all_runs_df[self.all_runs_df['Timestamp'] < session_start_time]
             
             total_duration = session_df['Timestamp'].max() - session_start_time
             active_playtime = session_df['Duration'].sum()
@@ -633,80 +681,45 @@ class App(customtkinter.CTk):
             
             report_data = {"grid": defaultdict(list), "scenario": defaultdict(list)}
 
-            # --- PERFORMANCE OPTIMIZATION ---
-            # Pre-calculate aggregates for faster lookups inside the loops
-            all_time_grid_avg = self.full_history_df.groupby(['Scenario', 'Sens'])['Score'].mean()
+            all_time_grid_avg = self.all_runs_df.groupby(['Scenario', 'Sens'])['Score'].mean()
             prev_grid_pb = history_before_session.groupby(['Scenario', 'Sens'])['Score'].max()
-            all_time_scen_avg = self.full_history_df.groupby('Scenario')['Score'].mean()
+            all_time_scen_avg = self.all_runs_df.groupby('Scenario')['Score'].mean()
             prev_scen_pb = history_before_session.groupby('Scenario')['Score'].max()
             
-            # --- Grid Level Analysis (Scenario + Sens) ---
             for (scenario, sens), group in session_df.groupby(['Scenario', 'Sens']):
                 prev_pb = prev_grid_pb.get((scenario, sens), 0)
                 session_pb = group['Score'].max()
                 is_pb = session_pb > prev_pb
-                
                 session_avg = group['Score'].mean()
                 all_time_avg = all_time_grid_avg.get((scenario, sens), 0)
-
-                item = {
-                    "name": scenario, "sens": sens, "play_count": len(group), "first_played": group['Timestamp'].min(),
-                    "session_avg": session_avg, "all_time_avg": all_time_avg,
-                    "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, 
-                    "is_pb": is_pb
-                }
-                report_data["grid"]["played"].append(item)
-                report_data["grid"]["averages"].append(item)
-                
+                item = { "name": scenario, "sens": sens, "play_count": len(group), "first_played": group['Timestamp'].min(), "session_avg": session_avg, "all_time_avg": all_time_avg, "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, "is_pb": is_pb }
+                report_data["grid"]["played"].append(item); report_data["grid"]["averages"].append(item)
                 if is_pb:
                     item_pb = item.copy()
-                    item_pb.update({
-                        "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb,
-                        "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf')
-                    })
+                    item_pb.update({ "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb, "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf') })
                     report_data["grid"]["pbs"].append(item_pb)
 
-            # --- Scenario Level Analysis (Aggregated) ---
             for scenario, group in session_df.groupby('Scenario'):
                 prev_pb = prev_scen_pb.get(scenario, 0)
                 session_pb = group['Score'].max()
                 is_pb = session_pb > prev_pb
-                
                 session_avg = group['Score'].mean()
                 all_time_avg = all_time_scen_avg.get(scenario, 0)
-                
-                item = {
-                    "name": scenario, "play_count": len(group), "first_played": group['Timestamp'].min(),
-                    "session_avg": session_avg, "all_time_avg": all_time_avg,
-                    "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, 
-                    "is_pb": is_pb
-                }
-                report_data["scenario"]["played"].append(item)
-                report_data["scenario"]["averages"].append(item)
-                
+                item = { "name": scenario, "play_count": len(group), "first_played": group['Timestamp'].min(), "session_avg": session_avg, "all_time_avg": all_time_avg, "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, "is_pb": is_pb }
+                report_data["scenario"]["played"].append(item); report_data["scenario"]["averages"].append(item)
                 if is_pb:
                     item_pb = item.copy()
-                    item_pb.update({
-                        "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb,
-                        "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf')
-                    })
+                    item_pb.update({ "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb, "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf') })
                     report_data["scenario"]["pbs"].append(item_pb)
             
             session_date_str = session_start_time.strftime('%B %d, %Y')
-            
-            # Pass the computed data back to the main thread to create the UI
             self.after(0, self._show_session_report_window, header_metrics, report_data, session_date_str)
-        
         finally:
-            # This ensures the status label is always reset
             self.after(0, self.status_label.configure, {"text": "Report ready."})
 
-    # --- REFACTOR: NEW METHOD ---
-    # This simple method runs on the main UI thread to safely create the report window.
     def _show_session_report_window(self, header_metrics, report_data, session_date_str):
         SessionReportWindow(self, header_metrics, report_data, session_date_str)
     
-    # --- The rest of the App class is unchanged. Paste it below ---
     def _build_main_ui_controls(self):
         self.main_controls_header, self.main_controls_content = self._create_collapsible_section("Options & Analysis", "main_controls", 1); self.main_controls_content.grid_columnconfigure(0, weight=1)
         selection_content_frame = customtkinter.CTkFrame(self.main_controls_content); selection_content_frame.grid(row=0, column=0, sticky="ew", pady=(0,5)); selection_content_frame.grid_columnconfigure(0, weight=1)
@@ -721,24 +734,52 @@ class App(customtkinter.CTk):
         self.recents_frame = customtkinter.CTkFrame(user_lists_frame); self.recents_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
         self.update_user_lists_display()
         
-        display_top_row_frame = customtkinter.CTkFrame(self.main_controls_content); display_top_row_frame.grid(row=1, column=0, sticky="ew"); display_top_row_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        display_top_row_frame = customtkinter.CTkFrame(self.main_controls_content); display_top_row_frame.grid(row=1, column=0, sticky="ew"); display_top_row_frame.grid_columnconfigure((0, 1, 2), weight=1, uniform="group1")
         sens_filter_group = customtkinter.CTkFrame(display_top_row_frame); sens_filter_group.grid(row=0, column=0, padx=(0,5), pady=5, sticky="ew")
         customtkinter.CTkLabel(sens_filter_group, text="Sensitivity Filter:").pack(side="left", padx=(10,5), pady=5); customtkinter.CTkRadioButton(sens_filter_group, text="All", variable=self.sens_filter_var, value="All", command=self.on_display_option_change).pack(side="left", padx=5, pady=5); customtkinter.CTkRadioButton(sens_filter_group, text="5cm Inc.", variable=self.sens_filter_var, value="5cm", command=self.on_display_option_change).pack(side="left", padx=5, pady=5); customtkinter.CTkRadioButton(sens_filter_group, text="10cm Inc.", variable=self.sens_filter_var, value="10cm", command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
         
-        misc_group = customtkinter.CTkFrame(display_top_row_frame); misc_group.grid(row=0, column=1, padx=(5,0), pady=5, sticky="ew")
-        customtkinter.CTkSwitch(misc_group, text="Show Decimals", variable=self.show_decimals_var, onvalue="On", offvalue="Off", command=self.on_display_option_change).pack(side="left", padx=10, pady=5)
-        customtkinter.CTkButton(misc_group, text="Manage Hidden", command=self.open_manage_hidden_window).pack(side="left", padx=10, pady=5)
-        
-        session_group = customtkinter.CTkFrame(display_top_row_frame); session_group.grid(row=0, column=2, padx=(5,0), pady=5, sticky="ew")
+        session_group = customtkinter.CTkFrame(display_top_row_frame); session_group.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         customtkinter.CTkLabel(session_group, text="Session Gap (min):").pack(side="left", padx=(10, 5));
         customtkinter.CTkEntry(session_group, textvariable=self.session_gap_minutes_var, width=50).pack(side="left")
         customtkinter.CTkLabel(session_group, text="(Requires Refresh)", font=customtkinter.CTkFont(size=10, slant="italic")).pack(side="left", padx=(5,10));
+        
+        misc_group = customtkinter.CTkFrame(display_top_row_frame); misc_group.grid(row=0, column=2, padx=(5,0), pady=5, sticky="ew")
+        misc_group.grid_columnconfigure(0, weight=1)
+        top_misc_frame = customtkinter.CTkFrame(misc_group, fg_color="transparent")
+        top_misc_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        customtkinter.CTkSwitch(top_misc_frame, text="Show Decimals", variable=self.show_decimals_var, onvalue="On", offvalue="Off", command=self.on_display_option_change).pack(side="left")
+        customtkinter.CTkButton(top_misc_frame, text="Manage Hidden", command=self.open_manage_hidden_window).pack(side="right")
+        bottom_misc_frame = customtkinter.CTkFrame(misc_group, fg_color="transparent")
+        bottom_misc_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0,5))
+        customtkinter.CTkLabel(bottom_misc_frame, text="Font Size:").pack(side="left")
+        font_size_entry = customtkinter.CTkEntry(bottom_misc_frame, textvariable=self.font_size_var, width=40)
+        font_size_entry.pack(side="left", padx=(0,10))
+        customtkinter.CTkLabel(bottom_misc_frame, text="Cell H:").pack(side="left")
+        cell_height_entry = customtkinter.CTkEntry(bottom_misc_frame, textvariable=self.cell_height_var, width=40)
+        cell_height_entry.pack(side="left")
+        font_size_entry.bind("<Return>", self.on_display_option_change)
+        cell_height_entry.bind("<Return>", self.on_display_option_change)
 
         self.filters_frame = customtkinter.CTkFrame(self.main_controls_content); self.filters_frame.grid(row=2, column=0, sticky="ew", pady=(5,0)); self.format_filter_frame = customtkinter.CTkFrame(self.main_controls_content); self.format_filter_frame.grid(row=3, column=0, sticky="ew", pady=(0,5))
-        highlight_group = customtkinter.CTkFrame(self.top_frame); highlight_group.grid(row=3, column=0, sticky="ew", padx=10, pady=(0,5)); customtkinter.CTkLabel(highlight_group, text="Highlight Mode:").pack(side="left", padx=(10,5), pady=5)
-        customtkinter.CTkRadioButton(highlight_group, text="None", variable=self.highlight_mode_var, value="None", command=self.on_display_option_change).pack(side="left", padx=5, pady=5); customtkinter.CTkRadioButton(highlight_group, text="Perf. Drop", variable=self.highlight_mode_var, value="Performance Drop", command=self.on_display_option_change).pack(side="left", padx=5, pady=5); customtkinter.CTkRadioButton(highlight_group, text="Row Heatmap", variable=self.highlight_mode_var, value="Row Heatmap", command=self.on_display_option_change).pack(side="left", padx=5, pady=5); customtkinter.CTkRadioButton(highlight_group, text="Global Heatmap", variable=self.highlight_mode_var, value="Global Heatmap", command=self.on_display_option_change).pack(side="left", padx=5, pady=5); customtkinter.CTkRadioButton(highlight_group, text="Target Score", variable=self.highlight_mode_var, value="Target Score", command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
+        
+        analysis_modes_frame = customtkinter.CTkFrame(self.top_frame); analysis_modes_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(5,5))
+        analysis_modes_frame.grid_columnconfigure((0, 1), weight=1)
+
+        grid_mode_frame = customtkinter.CTkFrame(analysis_modes_frame); grid_mode_frame.grid(row=0, column=0, sticky="ew", padx=(0,5))
+        customtkinter.CTkLabel(grid_mode_frame, text="Grid Display Mode:").pack(side="left", padx=(10,5), pady=5)
+        modes = ["Personal Best", "Average Score", "Play Count"]
+        for mode in modes:
+            customtkinter.CTkRadioButton(grid_mode_frame, text=mode, variable=self.grid_display_mode_var, value=mode, command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
+        
+        highlight_group = customtkinter.CTkFrame(analysis_modes_frame); highlight_group.grid(row=0, column=1, sticky="ew", padx=(5,0))
+        customtkinter.CTkLabel(highlight_group, text="Highlight Mode:").pack(side="left", padx=(10,5), pady=5)
+        h_modes = {"None": "None", "Perf. Drop": "Performance Drop", "Row Heatmap": "Row Heatmap", "Global Heatmap": "Global Heatmap", "Target Score": "Target Score"}
+        for text, val in h_modes.items():
+             customtkinter.CTkRadioButton(highlight_group, text=text, variable=self.highlight_mode_var, value=val, command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
         self.target_score_entry = customtkinter.CTkEntry(highlight_group, textvariable=self.target_score_var, width=80); self.target_score_entry.pack(side="left", padx=(0,10), pady=5); self.target_score_entry.bind("<Return>", self.on_display_option_change)
+        
         self._apply_initial_collapse_state(); self.on_display_option_change()
+        
     def _create_collapsible_section(self, title, section_key, row_index):
         header_frame = customtkinter.CTkFrame(self.top_frame, fg_color=("gray85", "gray20"), corner_radius=6); header_frame.grid(row=row_index, column=0, sticky="ew", padx=10, pady=(5, 1))
         content_frame = customtkinter.CTkFrame(self.top_frame); content_frame.grid(row=row_index + 1, column=0, sticky="ew", padx=10, pady=(0, 5))
@@ -755,58 +796,112 @@ class App(customtkinter.CTk):
         header_frame.configure(cursor="hand2"); header_label.configure(cursor="hand2"); toggle_button.configure(cursor="hand2")
         content_frame.toggle_function = toggle
         return header_frame, content_frame
+        
     def _apply_initial_collapse_state(self):
         if self.collapsed_states.get("main_controls", False):
             if hasattr(self, 'main_controls_content') and self.main_controls_content.winfo_viewable(): self.main_controls_content.toggle_function()
+            
     def on_closing(self):
         self.save_user_data()
         if self.results_table: self.results_table.destroy()
         self.destroy()
+        
     def on_display_option_change(self, event=None):
         if hasattr(self, 'target_score_entry'):
             if self.highlight_mode_var.get() == "Target Score": self.target_score_entry.pack(side="left", padx=(0,10), pady=5)
             else: self.target_score_entry.pack_forget()
         self.save_user_data(); self.display_grid_data()
+        
     def load_stats_thread(self):
         stats_path = self.path_entry.get()
         if not stats_path or not os.path.isdir(stats_path): return
         self.status_label.configure(text="Loading stats, please wait..."); self.load_button.configure(state="disabled"); self.select_path_button.configure(state="disabled")
-        self.progress_bar.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(0,10)); self.progress_bar.start()
+        self.progress_bar.grid(row=4, column=0, columnspan=2, sticky="ew", padx=10, pady=(0,10)); self.progress_bar.start()
         thread = threading.Thread(target=self.perform_load, args=(stats_path,)); thread.daemon = True; thread.start()
+        
     def is_float(self, val):
         try: float(val); return True
         except (ValueError, TypeError): return False
+        
     def _apply_format_filter(self):
-        self.save_user_data(); variable_axis = self.variable_axis_var.get(); pattern_filter = {}
+        self.save_user_data()
+        variable_axis = self.variable_axis_var.get()
+        pattern_filter = {}
         selected_patterns = [p for p, v in self.format_filter_vars.items() if v.get()]
         if selected_patterns: pattern_filter[variable_axis] = selected_patterns
-        df_to_process = self.current_family_info
-        if self.hidden_scenarios and df_to_process is not None: df_to_process = df_to_process[~df_to_process['Scenario'].isin(self.hidden_scenarios)]
-        self.current_unfiltered_grid_data = engine.analyze_variants(df_to_process, variable_axis=variable_axis, fixed_filters={}, base_scenario=self.scenario_search_var.get(), pattern_filter=pattern_filter)
+        
+        df_to_process = self.current_family_runs
+        if self.hidden_scenarios and df_to_process is not None:
+            df_to_process = df_to_process[~df_to_process['Scenario'].isin(self.hidden_scenarios)]
+
+        filtered_rows = []
+        base_scenario = self.scenario_search_var.get()
+
+        if variable_axis:
+            for _, row in df_to_process.iterrows():
+                modifiers, is_base_scenario = row['Modifiers'], row['Scenario'] == base_scenario
+                if not is_base_scenario and variable_axis not in modifiers: continue
+                if not is_base_scenario and not modifiers: continue
+                if pattern_filter and variable_axis in pattern_filter and not is_base_scenario:
+                    if modifiers[variable_axis][1] not in pattern_filter[variable_axis]: continue
+                
+                fixed_filters = {} 
+                temp_modifiers_for_check = {k: v[0] for k, v in modifiers.items()}
+                allowed_keys = set(fixed_filters.keys()) | {variable_axis}
+                if not set(temp_modifiers_for_check.keys()).issubset(allowed_keys): continue
+                match = all(temp_modifiers_for_check.get(key) == value for key, value in fixed_filters.items())
+                if match: filtered_rows.append(row)
+        else:
+            filtered_rows = [row for _, row in df_to_process.iterrows()]
+
+        if not filtered_rows:
+            self.current_summary_data = pd.DataFrame()
+        else:
+            filtered_df = pd.DataFrame(filtered_rows)
+            self.current_summary_data = filtered_df.groupby(['Scenario', 'Sens']).agg(
+                PB_Score=('Score', 'max'),
+                Avg_Score=('Score', 'mean'),
+                Play_Count=('Score', 'size')
+            ).reset_index()
+
         self.display_grid_data()
+        
     def build_filters_and_get_data(self):
         for widget in self.filters_frame.winfo_children(): widget.destroy()
         for widget in self.format_filter_frame.winfo_children(): widget.destroy()
         self.format_filter_frame.grid_remove(); self.format_filter_vars = {}
-        if self.current_family_info is None or self.current_family_info.empty: self.filters_frame.grid_remove(); self.display_grid_data(); return
-        filtered_family_info = self.current_family_info.copy()
+        
+        if self.current_family_runs is None or self.current_family_runs.empty:
+            self.filters_frame.grid_remove()
+            self.current_summary_data = pd.DataFrame()
+            self.display_grid_data()
+            return
+
+        filtered_family_info = self.current_family_runs.copy()
         if self.hidden_scenarios: filtered_family_info = filtered_family_info[~filtered_family_info['Scenario'].isin(self.hidden_scenarios)]
+        
         all_modifiers = defaultdict(set)
         for mod_dict in filtered_family_info['Modifiers']:
-            for k, v_tuple in mod_dict.items(): all_modifiers[k].add(v_tuple)
+            if mod_dict: 
+                for k, v_tuple in mod_dict.items(): all_modifiers[k].add(v_tuple)
+            
         if not all_modifiers:
             self.filters_frame.grid_remove()
-            base_name = self.scenario_search_var.get()
-            base_df = filtered_family_info[filtered_family_info['Scenario'] == base_name]
-            self.current_unfiltered_grid_data = engine.analyze_variants(base_df, base_scenario=base_name, variable_axis=None) if not base_df.empty else pd.DataFrame()
-            self.display_grid_data(); return
+            self.variable_axis_var.set("")
+            self._apply_format_filter()
+            return
+
         self.filters_frame.grid(); customtkinter.CTkLabel(self.filters_frame, text="Compare by:").pack(side="left", padx=(10,5), pady=5)
         preferred_axis = self.variable_axis_var.get()
         if not preferred_axis or preferred_axis not in all_modifiers.keys(): self.variable_axis_var.set(list(all_modifiers.keys())[0])
-        for key in sorted(list(all_modifiers.keys())): customtkinter.CTkRadioButton(self.filters_frame, text=key, variable=self.variable_axis_var, value=key, command=self.build_filters_and_get_data).pack(side="left", padx=5, pady=5)
+        
+        for key in sorted(list(all_modifiers.keys())):
+            customtkinter.CTkRadioButton(self.filters_frame, text=key, variable=self.variable_axis_var, value=key, command=self.build_filters_and_get_data).pack(side="left", padx=5, pady=5)
+        
         patterns_found = set(); variable_axis = self.variable_axis_var.get(); base_scenario = self.scenario_search_var.get()
         if variable_axis in all_modifiers:
             for value_tuple in all_modifiers[variable_axis]: patterns_found.add(value_tuple[1])
+            
         if len(patterns_found) > 1:
             self.format_filter_frame.grid(); customtkinter.CTkLabel(self.format_filter_frame, text="Filter Format:").pack(side="left", padx=(10,5), pady=5)
             def get_pattern_label(pattern_key):
@@ -818,128 +913,237 @@ class App(customtkinter.CTk):
                 is_checked = pattern not in unchecked_for_this_axis
                 var = customtkinter.BooleanVar(value=is_checked); self.format_filter_vars[pattern] = var
                 customtkinter.CTkCheckBox(self.format_filter_frame, text=get_pattern_label(pattern), variable=var, command=self._apply_format_filter).pack(side="left", padx=5, pady=5)
+        
         self._apply_format_filter()
+        
     def display_grid_data(self):
-        if self.results_table: self.results_table.destroy()
-        if self.current_unfiltered_grid_data is None or self.current_unfiltered_grid_data.empty: self.rating_frame.grid_remove(); return
-        self.rating_frame.grid(); grid_data = self.current_unfiltered_grid_data.copy()
-        if self.hidden_cms: grid_data.drop(columns=[c for c in grid_data.columns if str(c) in self.hidden_cms], inplace=True, errors='ignore')
-        if grid_data.empty: self.rating_frame.grid_remove(); return
+        for tip in self.tooltip_instances:
+            tip.widget.unbind("<Enter>")
+            tip.widget.unbind("<Leave>")
+            tip.widget.unbind("<ButtonPress>")
+        self.tooltip_instances = []
+
+        if self.results_table:
+            self.results_table.destroy()
+
+        if self.current_summary_data is None or self.current_summary_data.empty:
+            self.rating_frame.grid_remove()
+            return
+            
+        self.rating_frame.grid()
+        summary_data = self.current_summary_data.copy()
+
+        try:
+            cell_height = int(self.cell_height_var.get())
+        except (ValueError, TypeError):
+            cell_height = 28
+        try:
+            font_size = int(self.font_size_var.get())
+        except (ValueError, TypeError):
+            font_size = 12
+
+        display_mode = self.grid_display_mode_var.get()
+        value_map = {"Personal Best": "PB_Score", "Average Score": "Avg_Score", "Play Count": "Play_Count"}
+        display_value_col = value_map[display_mode]
+        highlight_value_col = value_map["Average Score"] if display_mode == "Average Score" else value_map["Personal Best"]
+
+        display_df = summary_data.pivot_table(index='Scenario', columns='Sens', values=display_value_col).fillna(np.nan)
+        highlight_df = summary_data.pivot_table(index='Scenario', columns='Sens', values=highlight_value_col).fillna(np.nan)
+        pb_df = summary_data.pivot_table(index='Scenario', columns='Sens', values='PB_Score').fillna(np.nan)
+        
+        if self.hidden_cms:
+            cols_to_drop = [c for c in display_df.columns if str(c) in self.hidden_cms]
+            display_df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+            highlight_df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+            pb_df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+
         sens_filter = self.sens_filter_var.get()
         if sens_filter != "All":
-            increment = 5 if sens_filter == "5cm" else 10; cols_to_keep = ['Scenario', 'BEST Score', 'BEST CM', '% vs Base']
-            sens_cols_str = [c for c in grid_data.columns if str(c).replace('.','',1).isdigit()]
-            for col in sens_cols_str:
-                if float(col) % increment == 0: cols_to_keep.append(col)
-            grid_data = grid_data[[c for c in grid_data.columns if c in cols_to_keep]]
+            increment = 5 if sens_filter == "5cm" else 10
+            sens_cols_str = [c for c in display_df.columns if self.is_float(c)]
+            cols_to_keep = [c for c in sens_cols_str if float(c) % increment == 0]
+            display_df = display_df[cols_to_keep]
+            highlight_df = highlight_df[cols_to_keep]
+            pb_df = pb_df[cols_to_keep]
+            
+        if display_df.empty: self.rating_frame.grid_remove(); return
+
+        pb_df['Best'] = pb_df.max(axis=1)
+        pb_df['cm'] = pb_df.idxmax(axis=1)
+        base_scenario = self.scenario_search_var.get()
+        base_pb_score = pb_df.loc[base_scenario, 'Best'] if base_scenario in pb_df.index else 1.0
+        if pd.isna(base_pb_score) or base_pb_score == 0: base_pb_score = 1.0
+        pb_df['%'] = (pb_df['Best'] / base_pb_score * 100)
+        
+        grid_data = display_df.join(pb_df[['Best', 'cm', '%']])
+
         sens_cols_for_rating = [c for c in grid_data.columns if self.is_float(c)]
-        if sens_cols_for_rating and not grid_data.empty:
+        if sens_cols_for_rating and not grid_data.empty and display_mode != "Play Count":
             numeric_data_rating = grid_data[sens_cols_for_rating].apply(pd.to_numeric, errors='coerce').fillna(0)
             rating = numeric_data_rating.sum().sum() / (len(grid_data) * len(sens_cols_for_rating)) if len(grid_data) * len(sens_cols_for_rating) > 0 else 0
             self.rating_label.configure(text=f"Rating: {round(rating)}")
         else: self.rating_label.configure(text="Rating: -")
+
         avg_row_series = None
-        sens_cols_for_avg = [c for c in grid_data.columns if self.is_float(c)]
-        if sens_cols_for_avg and not grid_data.empty:
-            column_averages = grid_data[sens_cols_for_avg].apply(pd.to_numeric, errors='coerce').mean()
+        sens_cols_for_avg = [c for c in pb_df.columns if self.is_float(c)]
+        if sens_cols_for_avg and not pb_df.empty:
+            column_averages = pb_df[sens_cols_for_avg].apply(pd.to_numeric, errors='coerce').mean()
             avg_row_series = pd.Series(column_averages, name="-- Averages --")
+            avg_of_avgs = avg_row_series.mean()
+            best_avg_score = avg_row_series.max()
+            best_avg_cm = avg_row_series.idxmax()
+            percent_vs_base = (best_avg_score / base_pb_score * 100)
+            avg_row_series['AVG'] = avg_of_avgs
+            avg_row_series['Best'] = best_avg_score
+            avg_row_series['cm'] = best_avg_cm
+            avg_row_series['%'] = percent_vs_base
+            avg_row_series['Scenario'] = "-- Averages --"
+
         current_scenario = self.scenario_search_var.get(); current_axis = self.variable_axis_var.get()
         current_recent_entry = {"name": current_scenario, "axis": current_axis}
         if current_scenario and (not self.recents or self.recents[0] != current_recent_entry): self.add_to_recents(current_scenario, current_axis)
-        base_scenario = self.scenario_search_var.get(); grid_data = grid_data.fillna('').reset_index(inplace=False)
-        if 'index' in grid_data.columns: grid_data = grid_data.drop(columns='index')
+
+        grid_data.reset_index(inplace=True)
+        
         def get_sort_key(scenario_name):
-            modifier_str = scenario_name.replace(base_scenario, '').strip(); numbers = re.findall(r'(\d+\.?\d*)', modifier_str)
-            return float(numbers[-1]) if numbers else 100
-        if 'Scenario' in grid_data.columns and not grid_data.empty:
-            grid_data['sort_key'] = grid_data['Scenario'].apply(get_sort_key); grid_data.sort_values(by='sort_key', inplace=True); grid_data.drop(columns='sort_key', inplace=True)
+            if scenario_name == base_scenario: return 100.0
+            modifier_str = scenario_name.replace(base_scenario, '').strip()
+            numbers = re.findall(r'(\d+\.?\d*)', modifier_str)
+            return float(numbers[-1]) if numbers else 999.0
+        
+        grid_data['sort_key'] = grid_data['Scenario'].apply(get_sort_key); grid_data.sort_values(by='sort_key', inplace=True); grid_data.drop(columns='sort_key', inplace=True)
+        
         sens_cols_for_avg = [c for c in grid_data.columns if self.is_float(c)]
         if sens_cols_for_avg: grid_data['AVG'] = grid_data[sens_cols_for_avg].apply(pd.to_numeric, errors='coerce').mean(axis=1)
         else: grid_data['AVG'] = np.nan
-        summary_cols_map = {'BEST Score': 'Best', 'BEST CM': 'cm', '% vs Base': '%', 'AVG': 'AVG'}; grid_data.rename(columns=summary_cols_map, inplace=True)
-        if avg_row_series is not None and not avg_row_series.empty:
-            avg_of_avgs, best_avg_score, best_avg_cm = avg_row_series.mean(), avg_row_series.max(), avg_row_series.idxmax()
-            base_row = grid_data[grid_data['Scenario'] == base_scenario]
-            base_best_score_val = pd.to_numeric(base_row['Best'], errors='coerce').get(0, 1.0)
-            if pd.isna(base_best_score_val) or base_best_score_val == 0: base_best_score_val = 1.0
-            percent_vs_base = f"{(best_avg_score / base_best_score_val * 100):.1f}%"
-            avg_row_series['AVG'], avg_row_series['Best'], avg_row_series['cm'], avg_row_series['%'], avg_row_series['Scenario'] = avg_of_avgs, best_avg_score, best_avg_cm, percent_vs_base, "-- Averages --"
-            grid_data = pd.concat([avg_row_series.to_frame().T, grid_data], ignore_index=True)
+        
+        if avg_row_series is not None:
+             grid_data = pd.concat([avg_row_series.to_frame().T, grid_data], ignore_index=True)
+        
+        grid_data = grid_data.fillna('')
         cols = grid_data.columns.tolist()
-        if 'Scenario' not in cols and 'Scenario' in summary_cols_map.values(): cols.insert(0, 'Scenario')
-        sens_cols = sorted([c for c in cols if c not in summary_cols_map.values() and c != 'Scenario' and self.is_float(c)], key=float)
-        other_cols = [c for c in cols if c not in summary_cols_map.values() and c != 'Scenario' and not self.is_float(c)]
-        final_col_order = ['Scenario'] + sens_cols + other_cols + ['AVG', 'Best', 'cm', '%']; final_col_order = [c for c in final_col_order if c in grid_data.columns]; grid_data = grid_data[final_col_order]
+        summary_cols = ['AVG', 'Best', 'cm', '%']
+        sens_cols = sorted([c for c in cols if self.is_float(c)], key=float)
+        final_col_order = ['Scenario'] + sens_cols + summary_cols
+        final_col_order = [c for c in final_col_order if c in grid_data.columns]
+        grid_data = grid_data[final_col_order]
+        
         values = grid_data.values.tolist()
         if self.show_decimals_var.get() == "Off":
             percent_col_idx = grid_data.columns.get_loc('%') if '%' in grid_data.columns else -1
             for r_idx, row in enumerate(values):
                 for c_idx, cell in enumerate(row):
-                    if c_idx == percent_col_idx and isinstance(cell, str) and '%' in cell:
-                        try: num_val = float(cell.replace('%', '')); values[r_idx][c_idx] = f"{round(num_val)}%"
-                        except (ValueError, TypeError): continue
+                    if c_idx == percent_col_idx and isinstance(cell, (float, int)):
+                         values[r_idx][c_idx] = f"{round(cell)}%"
                     else:
-                        try: values[r_idx][c_idx] = int(float(cell))
+                        try: values[r_idx][c_idx] = int(round(float(cell)))
                         except (ValueError, TypeError): continue
+        
         formatted_columns = [f"{col}cm" if self.is_float(col) else col for col in grid_data.columns]
         table_values = [formatted_columns] + values
-        self.results_table = CTkTable(self.bottom_frame, values=table_values); self.results_table.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        self.results_table = CTkTable(self.bottom_frame, values=table_values, 
+                                      header_color=("gray80", "gray25"),
+                                      font=("Arial", font_size))
+        self.results_table.grid(row=1, column=0, sticky="new", padx=5, pady=5)
+
+        for r in range(self.results_table.rows):
+            for c in range(self.results_table.columns):
+                cell = self.results_table.frame.get((r, c))
+                if cell:
+                    cell.configure(height=cell_height)
+
         if 'Scenario' in final_col_order: self.results_table.edit_column(0, width=350)
-        self.bind_graph_events(grid_data); self.bind_hide_events(table_values); self.apply_highlighting(grid_data)
-    def apply_highlighting(self, grid_data):
+        
+        self.bind_graph_events(grid_data)
+        self.bind_hide_events(table_values)
+        self.bind_tooltips(grid_data)
+        self.apply_highlighting(highlight_df, grid_data)
+
+    def apply_highlighting(self, highlight_df, display_df):
         mode = self.highlight_mode_var.get()
-        if mode == "None" or grid_data.empty: return
-        perf_drop_cols = [c for c in grid_data.columns if c != 'Scenario' and c != 'cm']
-        heatmap_cols = [c for c in grid_data.columns if self.is_float(c) or c == 'AVG' or c == 'Best']
-        values_only, global_min, global_max = grid_data.values, None, None
+        if mode == "None" or highlight_df.empty: return
+        
+        highlight_df = highlight_df.reindex(index=display_df['Scenario'].values).fillna(np.nan)
+
+        pb_df = self.current_summary_data.pivot_table(index='Scenario', columns='Sens', values='PB_Score').fillna(np.nan)
+        pb_df = pb_df.reindex(index=display_df['Scenario'].values)
+        highlight_df['Best'] = pb_df.max(axis=1)
+
+        heatmap_cols = [c for c in highlight_df.columns if self.is_float(c)] + ['Best']
+        if heatmap_cols:
+            highlight_df['AVG'] = highlight_df[[c for c in highlight_df.columns if self.is_float(c)]].apply(pd.to_numeric, errors='coerce').mean(axis=1)
+            heatmap_cols.append('AVG')
+            
+        is_avg_row_present = '-- Averages --' in display_df['Scenario'].values
+        if is_avg_row_present:
+            avg_row_data = display_df[display_df['Scenario'] == '-- Averages --']
+            if not avg_row_data.empty:
+                highlight_avg_row = highlight_df[highlight_df.index != '-- Averages --'][heatmap_cols].mean()
+                highlight_df.loc['-- Averages --'] = highlight_avg_row
+
+        perf_drop_cols = heatmap_cols
+            
+        values_only, global_min, global_max = highlight_df.values, None, None
+        
         if mode == "Global Heatmap":
-            all_scores = [float(cell) for row in values_only for c_idx, cell in enumerate(row) if grid_data.columns[c_idx] in heatmap_cols and str(cell).replace('.','',1).isdigit()]
-            if all_scores: global_min, global_max = min(all_scores), max(all_scores)
+            all_scores = highlight_df[highlight_df.index != '-- Averages --'][heatmap_cols].to_numpy().flatten()
+            all_scores = all_scores[~np.isnan(all_scores)]
+            if all_scores.size > 0:
+                global_min, global_max = np.min(all_scores), np.max(all_scores)
+
         target_score_val, is_target_mode, grid_min_score = 0, mode == "Target Score", 0
         if is_target_mode:
             try:
                 target_score_val = float(self.target_score_var.get())
-                all_scores_in_grid = [float(cell) for row in values_only for c_idx, cell in enumerate(row) if grid_data.columns[c_idx] in heatmap_cols and self.is_float(cell)]
-                if all_scores_in_grid: grid_min_score = min(all_scores_in_grid)
+                all_scores_in_grid = highlight_df[highlight_df.index != '-- Averages --'][heatmap_cols].to_numpy().flatten()
+                all_scores_in_grid = all_scores_in_grid[~np.isnan(all_scores_in_grid)]
+                if all_scores_in_grid.size > 0: grid_min_score = np.min(all_scores_in_grid)
             except (ValueError, TypeError): is_target_mode = False
-        scenario_col_index = grid_data.columns.get_loc('Scenario') if 'Scenario' in grid_data.columns else -1
-        for r_idx, row_data in enumerate(values_only):
-            is_avg_row = scenario_col_index != -1 and row_data[scenario_col_index] == "-- Averages --"
-            if is_avg_row:
-                for c_idx in range(len(row_data)): self.results_table.frame[r_idx + 1, c_idx].configure(fg_color=("gray70", "gray25"))
-            if mode == "Performance Drop" and r_idx > 0 and not is_avg_row:
-                if scenario_col_index != -1 and values_only[r_idx-1][scenario_col_index] == "-- Averages --": continue
-                for c_idx, col_name in enumerate(grid_data.columns):
+
+        for r_idx, row_data in enumerate(highlight_df.itertuples(index=True)):
+            scenario_name = row_data.Index
+            
+            if is_avg_row_present and scenario_name == "-- Averages --":
+                for c_idx in range(len(display_df.columns)):
+                    self.results_table.frame[r_idx + 1, c_idx].configure(fg_color=("gray70", "gray25"))
+            
+            for c_idx, col_name in enumerate(highlight_df.columns):
+                table_col_idx = display_df.columns.get_loc(col_name) if col_name in display_df.columns else -1
+                if table_col_idx == -1: continue
+
+                try:
+                    val = float(row_data[c_idx+1])
+                    if pd.isna(val):
+                        continue
+                except (ValueError, TypeError, IndexError):
+                    continue
+
+                if mode == "Performance Drop" and r_idx > 0:
                     if col_name not in perf_drop_cols: continue
+                    if is_avg_row_present and r_idx == 1: continue
                     try:
-                        current_val, above_val = float(str(row_data[c_idx]).replace('%', '')), float(str(values_only[r_idx - 1][c_idx]).replace('%', ''))
-                        if current_val < above_val: self.results_table.frame[r_idx + 1, c_idx].configure(fg_color="#592020")
-                    except (ValueError, TypeError): continue
-            elif mode == "Row Heatmap":
-                row_scores = [float(row_data[c_idx]) for c_idx, col in enumerate(grid_data.columns) if col in heatmap_cols and str(row_data[c_idx]).replace('.','',1).isdigit()]
-                if len(row_scores) < 2: continue
-                min_score, max_score = min(row_scores), max(row_scores)
-                if min_score == max_score: continue
-                for c_idx, col_name in enumerate(grid_data.columns):
+                        above_val = float(values_only[r_idx - 1][c_idx])
+                        if pd.notna(above_val) and val < above_val:
+                             self.results_table.frame[r_idx + 1, table_col_idx].configure(fg_color="#592020")
+                    except (ValueError, TypeError, IndexError): continue
+                elif mode == "Row Heatmap":
                     if col_name not in heatmap_cols: continue
-                    try: val = float(row_data[c_idx]); norm = (val - min_score) / (max_score - min_score); self.results_table.frame[r_idx + 1, c_idx].configure(fg_color=self.get_heatmap_color(norm))
-                    except (ValueError, TypeError): continue
-            elif mode == "Global Heatmap" and global_min is not None and global_max is not None and global_min != global_max:
-                for c_idx, col_name in enumerate(grid_data.columns):
+                    row_scores = [float(cell) for c, cell in enumerate(row_data[1:]) if highlight_df.columns[c] in heatmap_cols and pd.notna(cell)]
+                    if len(row_scores) < 2: continue
+                    min_score, max_score = min(row_scores), max(row_scores)
+                    if min_score == max_score: continue
+                    norm = (val - min_score) / (max_score - min_score); self.results_table.frame[r_idx + 1, table_col_idx].configure(fg_color=self.get_heatmap_color(norm))
+                elif mode == "Global Heatmap" and global_min is not None and global_max is not None and global_min != global_max:
                     if col_name not in heatmap_cols: continue
-                    try: val = float(row_data[c_idx]); norm = (val - global_min) / (global_max - global_min); self.results_table.frame[r_idx + 1, c_idx].configure(fg_color=self.get_heatmap_color(norm))
-                    except (ValueError, TypeError): continue
-            elif is_target_mode:
-                for c_idx, col_name in enumerate(grid_data.columns):
+                    norm = (val - global_min) / (global_max - global_min); self.results_table.frame[r_idx + 1, table_col_idx].configure(fg_color=self.get_heatmap_color(norm))
+                elif is_target_mode:
                     if col_name not in heatmap_cols: continue
-                    try:
-                        val = float(row_data[c_idx])
-                        if val >= target_score_val: self.results_table.frame[r_idx + 1, c_idx].configure(fg_color="#591e9c")
-                        else:
-                            denominator = target_score_val - grid_min_score
-                            if denominator <= 0: denominator = 1
-                            norm = (val - grid_min_score) / denominator; self.results_table.frame[r_idx + 1, c_idx].configure(fg_color=self.get_heatmap_color(norm))
-                    except (ValueError, TypeError): continue
+                    if val >= target_score_val: self.results_table.frame[r_idx + 1, table_col_idx].configure(fg_color="#591e9c")
+                    else:
+                        denominator = target_score_val - grid_min_score
+                        if denominator <= 0: denominator = 1
+                        norm = (val - grid_min_score) / denominator; self.results_table.frame[r_idx + 1, table_col_idx].configure(fg_color=self.get_heatmap_color(norm))
+
     def get_heatmap_color(self, normalized_value):
         normalized_value = max(0, min(1, normalized_value)); COLOR_RED, COLOR_YELLOW, COLOR_GREEN = (120, 47, 47), (122, 118, 50), (54, 107, 54)
         if normalized_value < 0.5:
@@ -947,6 +1151,7 @@ class App(customtkinter.CTk):
         else:
             local_norm = (normalized_value - 0.5) * 2; r, g, b = int(COLOR_YELLOW[0]*(1-local_norm)+COLOR_GREEN[0]*local_norm), int(COLOR_YELLOW[1]*(1-local_norm)+COLOR_GREEN[1]*local_norm), int(COLOR_YELLOW[2]*(1-local_norm)+COLOR_GREEN[2]*local_norm)
         return f"#{r:02x}{g:02x}{b:02x}"
+
     def bind_graph_events(self, grid_data):
         if not self.results_table or grid_data.empty: return
         scenario_col_idx = grid_data.columns.get_loc('Scenario') if 'Scenario' in grid_data.columns else -1
@@ -954,7 +1159,7 @@ class App(customtkinter.CTk):
 
         for r_idx, row in enumerate(grid_data.itertuples(index=False)):
             scenario_name = getattr(row, 'Scenario', None)
-            if not scenario_name or scenario_name == "-- Averages --": continue
+            if not scenario_name or scenario_name == '-- Averages --': continue
             
             scenario_cell_widget = self.results_table.frame[r_idx + 1, scenario_col_idx]
             scenario_cell_widget.bind("<Button-1>", lambda e, s=scenario_name: self.on_scenario_name_click(e, s))
@@ -964,6 +1169,37 @@ class App(customtkinter.CTk):
                 if self.is_float(col_name):
                     cell_widget = self.results_table.frame[r_idx + 1, c_idx]
                     cell_widget.bind("<Button-1>", lambda e, s=scenario_name, cm=col_name: self.on_cell_click(e, s, cm)); cell_widget.configure(cursor="hand2")
+
+    def bind_tooltips(self, grid_data):
+        if not self.results_table or grid_data.empty or self.current_summary_data is None: return
+        
+        indexed_summary = self.current_summary_data.set_index(['Scenario', 'Sens'])
+        
+        for r_idx, row in enumerate(grid_data.itertuples(index=False)):
+            scenario_name = getattr(row, 'Scenario', None)
+            if not scenario_name or scenario_name == '-- Averages --': continue
+
+            for c_idx, col_name in enumerate(grid_data.columns):
+                if self.is_float(col_name):
+                    cell_widget = self.results_table.frame[r_idx + 1, c_idx]
+                    
+                    def make_text_func(s_name, s_sens):
+                        def get_tooltip_text():
+                            try:
+                                stats = indexed_summary.loc[(s_name, float(s_sens))]
+                                pb = stats.get('PB_Score', 0)
+                                avg = stats.get('Avg_Score', 0)
+                                count = stats.get('Play_Count', 0)
+                                return (f"PB: {pb:.1f}\n"
+                                        f"Avg: {avg:.1f}\n"
+                                        f"Runs: {count}")
+                            except (KeyError, TypeError):
+                                return ""
+                        return get_tooltip_text
+
+                    tooltip = Tooltip(cell_widget, make_text_func(scenario_name, col_name))
+                    self.tooltip_instances.append(tooltip)
+
     def bind_hide_events(self, table_values):
         if not self.results_table or not table_values: return
         column_headers = table_values[0]
@@ -972,17 +1208,23 @@ class App(customtkinter.CTk):
             if self.is_float(cm_value): self.results_table.frame[0, j].bind("<Button-3>", lambda e, cm=cm_value: self.show_col_context_menu(e, cm))
         for i, row_data in enumerate(table_values[1:]):
             if row_data and row_data[0]: self.results_table.frame[i + 1, 0].bind("<Button-3>", lambda e, s=row_data[0]: self.show_row_context_menu(e, s))
+            
     def show_col_context_menu(self, event, cm_value):
         menu = tkinter.Menu(self, tearoff=0); menu.add_command(label=f"Hide {cm_value}cm", command=lambda: self.hide_cm(cm_value)); menu.tk_popup(event.x_root, event.y_root)
+        
     def show_row_context_menu(self, event, scenario_name):
         menu = tkinter.Menu(self, tearoff=0); menu.add_command(label=f"Hide Scenario", command=lambda: self.hide_scenario(scenario_name)); menu.tk_popup(event.x_root, event.y_root)
+        
     def hide_cm(self, cm_value): self.hidden_cms.add(str(cm_value)); self.save_user_data(); self.display_grid_data()
+    
     def hide_scenario(self, scenario_name): self.hidden_scenarios.add(scenario_name); self.save_user_data(); self.build_filters_and_get_data()
+    
     def open_manage_hidden_window(self):
         win = customtkinter.CTkToplevel(self); win.title("Manage Hidden Items"); win.geometry("600x400"); win.transient(self); win.grid_columnconfigure(0, weight=1); win.grid_rowconfigure(1, weight=1)
         customtkinter.CTkLabel(win, text="Right-click a header to hide it. Un-hide items below.", font=customtkinter.CTkFont(weight="bold")).grid(row=0, column=0, padx=10, pady=10)
         tabview = customtkinter.CTkTabview(win); tabview.grid(row=1, column=0, padx=10, pady=10, sticky="nsew"); tabview.add("Hidden Scenarios"); tabview.add("Hidden CMs")
         self._populate_manage_hidden_window(tabview)
+        
     def _populate_manage_hidden_window(self, tabview):
         for tab_name in ["Hidden Scenarios", "Hidden CMs"]:
             for widget in tabview.tab(tab_name).winfo_children(): widget.destroy()
@@ -998,6 +1240,7 @@ class App(customtkinter.CTk):
             item_frame = customtkinter.CTkFrame(cms_frame); item_frame.pack(fill="x", pady=2)
             customtkinter.CTkLabel(item_frame, text=f"{cm}cm").pack(side="left", padx=5, pady=2)
             customtkinter.CTkButton(item_frame, text="Unhide", width=80, command=lambda c=cm: self.unhide_item('cm', c, tabview)).pack(side="right", padx=5)
+            
     def unhide_item(self, item_type, value, tabview):
         if item_type == 'scenario': self.hidden_scenarios.remove(value)
         elif item_type == 'cm': self.hidden_cms.remove(str(value))
@@ -1005,6 +1248,7 @@ class App(customtkinter.CTk):
         self._populate_manage_hidden_window(tabview)
         if item_type == 'scenario': self.build_filters_and_get_data()
         else: self.display_grid_data()
+        
     def toggle_favorite(self):
         scenario = self.scenario_search_var.get()
         if not scenario: return
@@ -1012,10 +1256,12 @@ class App(customtkinter.CTk):
         if fav_entry: self.favorites.remove(fav_entry)
         else: self.favorites.append({"name": scenario, "axis": self.variable_axis_var.get()})
         self.save_user_data(); self.update_user_lists_display(); self.update_fav_button_state()
+        
     def add_to_recents(self, scenario, axis):
         self.recents = [rec for rec in self.recents if rec['name'] != scenario]
         self.recents.insert(0, {"name": scenario, "axis": axis}); self.recents = self.recents[:5]
         self.save_user_data(); self.update_user_lists_display()
+        
     def update_user_lists_display(self):
         for frame in [self.favorites_frame, self.recents_frame]:
             for widget in frame.winfo_children(): widget.destroy()
@@ -1027,22 +1273,26 @@ class App(customtkinter.CTk):
         for rec in self.recents:
             display_text = f"{rec['name']}" + (f"  [{rec['axis']}]" if rec.get('axis') else "")
             btn = customtkinter.CTkButton(self.recents_frame, text=display_text, fg_color="transparent", anchor="w", command=lambda s=rec: self.select_from_list(s)); btn.pack(fill="x", padx=5)
+            
     def update_fav_button_state(self):
         scenario = self.scenario_search_var.get()
         if scenario and any(fav["name"] == scenario for fav in self.favorites): self.fav_button.configure(text="★", fg_color="gold")
         else: self.fav_button.configure(text="☆", fg_color=customtkinter.ThemeManager.theme["CTkButton"]["fg_color"])
+        
     def select_from_list(self, selection):
         if isinstance(selection, dict): self.scenario_search_var.set(selection['name']); self.variable_axis_var.set(selection.get('axis', ''))
         else: self.scenario_search_var.set(selection)
         self.autocomplete_listbox.grid_remove(); self.update_grid()
+        
     def update_grid(self):
         base_scenario = self.scenario_search_var.get()
-        if not base_scenario or self.master_df is None: return
+        if not base_scenario or self.all_runs_df is None: return
         saved_target = self.target_scores_by_scenario.get(base_scenario, "3000")
         self.target_score_var.set(saved_target)
-        self.current_family_info = engine.get_scenario_family_info(self.master_df, base_scenario)
+        self.current_family_runs = engine.get_scenario_family_info(self.all_runs_df, base_scenario)
         if not self.variable_axis_var.get(): self.variable_axis_var.set("")
         self.build_filters_and_get_data(); self.update_fav_button_state()
+        
     def update_autocomplete(self, *args):
         search_term = self.scenario_search_var.get().lower(); self.update_fav_button_state()
         for widget in self.autocomplete_listbox.winfo_children(): widget.destroy()
@@ -1052,17 +1302,28 @@ class App(customtkinter.CTk):
             self.autocomplete_listbox.grid()
             for scen in suggestions: btn = customtkinter.CTkButton(self.autocomplete_listbox, text=scen, fg_color="transparent", anchor="w", command=lambda s=scen: self.select_from_list(s)); btn.pack(fill="x")
         else: self.autocomplete_listbox.grid_remove()
+        
     def select_stats_folder(self):
         folder_path = filedialog.askdirectory();
         if folder_path: self.path_entry.delete(0, "end"); self.path_entry.insert(0, folder_path)
+
     def set_default_path(self):
-        path = r"C:\Program Files (x86)\Steam\steamapps\common\FPSAimTrainer\FPSAimTrainer\stats"
-        if os.path.exists(path): self.path_entry.insert(0, path)
+        home = Path.home()
+        paths_to_check = [
+            Path("C:/Program Files (x86)/Steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats"),
+            home / ".steam/steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats",
+            home / ".local/share/Steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats"
+        ]
+        for path in paths_to_check:
+            if path.exists():
+                self.path_entry.insert(0, str(path))
+                break
+        
     def perform_load(self, stats_path):
         try: gap_minutes = int(self.session_gap_minutes_var.get())
         except (ValueError, TypeError): gap_minutes = 30
-        data_tuple = engine.find_and_process_stats(stats_path, session_gap_minutes=gap_minutes)
-        self.after(0, self.on_load_complete, data_tuple)
+        all_runs_df = engine.find_and_process_stats(stats_path, session_gap_minutes=gap_minutes)
+        self.after(0, self.on_load_complete, all_runs_df)
 
 if __name__ == "__main__":
     app = App()
