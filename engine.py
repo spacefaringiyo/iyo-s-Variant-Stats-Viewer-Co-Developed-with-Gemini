@@ -6,6 +6,12 @@ import json
 from datetime import datetime, time, timedelta
 
 # --- MODIFIED: Removed obsolete PB cache path ---
+
+APP_DATA_DIR = Path.home() / '.kovaaks_stats_viewer'
+APP_DATA_DIR.mkdir(exist_ok=True) # Ensure the directory exists
+
+CACHE_HISTORY_PATH = APP_DATA_DIR / 'kovaaks_history_cache.parquet'
+CACHE_INFO_PATH = APP_DATA_DIR / 'kovaaks_cache_info.json'
 CACHE_HISTORY_PATH = 'kovaaks_history_cache.parquet'
 CACHE_INFO_PATH = 'kovaaks_cache_info.json'
 

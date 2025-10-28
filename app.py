@@ -20,6 +20,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 customtkinter.set_default_color_theme("blue")
 
+APP_DATA_DIR = Path.home() / '.kovaaks_stats_viewer'
+APP_DATA_DIR.mkdir(exist_ok=True) # Ensure the directory exists
+USER_DATA_FILE = APP_DATA_DIR / "user_data.json"
+
 USER_DATA_FILE = "user_data.json"
 
 # --- HELPER CLASS: Tooltip ---
