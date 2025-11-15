@@ -230,7 +230,8 @@ class SessionReportWindow(customtkinter.CTkToplevel):
             stats_frame = customtkinter.CTkFrame(card, fg_color="transparent"); stats_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(0,5))
             stats_frame.grid_columnconfigure((0,1,2), weight=1, uniform="group1")
             session_text = f"Session: {item['session_avg']:.0f} ({item['play_count']} runs)"
-            all_time_text = f"All-Time: {item['all_time_avg']:.0f}"
+            all_time_text = f"All-Time: {item['all_time_avg']:.0f} ({int(item.get('all_time_play_count', 0))} runs)"
+            
             perf_str = f"{item['perf_vs_avg']:+.1f}%"; perf_color = "lightgreen" if item['perf_vs_avg'] >= 0 else "#F47174"
             customtkinter.CTkLabel(stats_frame, text=session_text, anchor="w").grid(row=0, column=0, sticky="ew", padx=5)
             customtkinter.CTkLabel(stats_frame, text=all_time_text, anchor="center").grid(row=0, column=1, sticky="ew")
@@ -455,7 +456,7 @@ class App(customtkinter.CTk):
         self.grid_display_mode_var = customtkinter.StringVar(value="Personal Best")
         self.highlight_mode_var, self.show_decimals_var = customtkinter.StringVar(value="Performance Drop"), customtkinter.StringVar(value="Off")
         self.cell_height_var = customtkinter.StringVar(value="28")
-        self.appearance_mode_var = customtkinter.StringVar(value="System") # --- ADDED ---
+        self.appearance_mode_var = customtkinter.StringVar(value="System")
         self.font_size_var = customtkinter.StringVar(value="12")
         
         self.target_score_var = customtkinter.StringVar(value="3000")
@@ -465,11 +466,12 @@ class App(customtkinter.CTk):
         self.hidden_scenarios, self.hidden_cms = set(), set()
         self.graph_hide_settings = {}
         self.tooltip_instances = []
+        self.detailed_stats_cache = {}
 
-        self.load_user_data() # Load user data first
-        customtkinter.set_appearance_mode(self.appearance_mode_var.get()) # Apply theme before creating widgets
+        self.load_user_data()
+        customtkinter.set_appearance_mode(self.appearance_mode_var.get())
         
-        self.title("iyo's Variant Stats Viewer co-developed with Gemini")
+        self.title("iyo's Variant Stats Viewer co-developed with Gemini (Version v1.18)")
         if hasattr(self, 'saved_geometry') and self.saved_geometry:
             self.geometry(self.saved_geometry)
         else:
@@ -491,7 +493,7 @@ class App(customtkinter.CTk):
             try:
                 with open(USER_DATA_FILE, 'r') as f: data = json.load(f)
                 self.saved_geometry = data.get("window_geometry")
-                self.appearance_mode_var.set(data.get("appearance_mode", "System")) # --- ADDED ---
+                self.appearance_mode_var.set(data.get("appearance_mode", "System"))
                 self.favorites = [{"name": fav, "axis": ""} if isinstance(fav, str) else fav for fav in data.get("favorites", [])]
                 self.recents = [{"name": rec, "axis": ""} if isinstance(rec, str) else rec for rec in data.get("recents", [])]
                 self.sens_filter_var.set(data.get("sens_filter_preference", "All"))
@@ -524,7 +526,7 @@ class App(customtkinter.CTk):
                 if not self.format_filter_preferences.get(current_scenario): del self.format_filter_preferences[current_scenario]
         data_to_save = {
             "window_geometry": self.geometry(),
-            "appearance_mode": self.appearance_mode_var.get(), # --- ADDED ---
+            "appearance_mode": self.appearance_mode_var.get(),
             "favorites": self.favorites, "recents": self.recents, "sens_filter_preference": self.sens_filter_var.get(), 
             "grid_display_mode_preference": self.grid_display_mode_var.get(),
             "highlight_mode_preference": self.highlight_mode_var.get(), "show_decimals_preference": self.show_decimals_var.get(),
@@ -600,12 +602,11 @@ class App(customtkinter.CTk):
         
         if all_runs_df is not None and not all_runs_df.empty and 'Duration' in all_runs_df.columns:
             self.all_runs_df = all_runs_df
-            unique_scenarios = self.all_runs_df['Scenario'].unique()
             
-            potential_bases = {s for s in unique_scenarios if any(other.startswith(s + ' ') for other in unique_scenarios)}
-            base_scenarios = {b for b in potential_bases if not any(b.startswith(p + ' ') for p in potential_bases)}
-            standalone_scenarios = {s for s in unique_scenarios if not any(s.startswith(b + ' ') for b in base_scenarios)}
-            self.scenario_list = sorted(list(base_scenarios.union(standalone_scenarios)))
+            unique_scenarios = self.all_runs_df['Scenario'].unique()
+            self.scenario_list = sorted(list(unique_scenarios))
+            
+            self.update_user_lists_display()
 
             self.status_label.configure(text=f"Loaded {len(self.all_runs_df)} total runs. Ready to search.")
             self.scenario_entry.configure(state="normal")
@@ -690,41 +691,175 @@ class App(customtkinter.CTk):
             
             report_data = {"grid": defaultdict(list), "scenario": defaultdict(list)}
 
-            all_time_grid_avg = self.all_runs_df.groupby(['Scenario', 'Sens'])['Score'].mean()
+            all_time_grid_stats = self.all_runs_df.groupby(['Scenario', 'Sens'])['Score'].agg(['mean', 'size'])
             prev_grid_pb = history_before_session.groupby(['Scenario', 'Sens'])['Score'].max()
-            all_time_scen_avg = self.all_runs_df.groupby('Scenario')['Score'].mean()
+            all_time_scen_stats = self.all_runs_df.groupby('Scenario')['Score'].agg(['mean', 'size'])
             prev_scen_pb = history_before_session.groupby('Scenario')['Score'].max()
             
             for (scenario, sens), group in session_df.groupby(['Scenario', 'Sens']):
-                prev_pb = prev_grid_pb.get((scenario, sens), 0)
                 session_pb = group['Score'].max()
-                is_pb = session_pb > prev_pb
+                is_first_time = (scenario, sens) not in prev_grid_pb.index
+                prev_pb = 0 if is_first_time else prev_grid_pb.loc[(scenario, sens)]
+                is_pb = not is_first_time and session_pb > prev_pb
+                
                 session_avg = group['Score'].mean()
-                all_time_avg = all_time_grid_avg.get((scenario, sens), 0)
-                item = { "name": scenario, "sens": sens, "play_count": len(group), "first_played": group['Timestamp'].min(), "session_avg": session_avg, "all_time_avg": all_time_avg, "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, "is_pb": is_pb }
-                report_data["grid"]["played"].append(item); report_data["grid"]["averages"].append(item)
+                
+                all_time_avg = all_time_grid_stats.loc[(scenario, sens)]['mean'] if (scenario, sens) in all_time_grid_stats.index else 0
+                all_time_count = all_time_grid_stats.loc[(scenario, sens)]['size'] if (scenario, sens) in all_time_grid_stats.index else 0
+
+                item = { "name": scenario, "sens": sens, "play_count": len(group), "first_played": group['Timestamp'].min(), 
+                         "session_avg": session_avg, "all_time_avg": all_time_avg, "all_time_play_count": all_time_count,
+                         "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, "is_pb": is_pb }
+                
+                report_data["grid"]["played"].append(item)
+                # --- MODIFIED: Only add to averages list if it's not the first time playing ---
+                if not is_first_time:
+                    report_data["grid"]["averages"].append(item)
+                
                 if is_pb:
                     item_pb = item.copy()
-                    item_pb.update({ "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb, "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf') })
+                    item_pb.update({ "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb, 
+                                     "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf') })
                     report_data["grid"]["pbs"].append(item_pb)
 
             for scenario, group in session_df.groupby('Scenario'):
-                prev_pb = prev_scen_pb.get(scenario, 0)
                 session_pb = group['Score'].max()
-                is_pb = session_pb > prev_pb
+                is_first_time = scenario not in prev_scen_pb.index
+                prev_pb = 0 if is_first_time else prev_scen_pb.loc[scenario]
+                is_pb = not is_first_time and session_pb > prev_pb
+                
                 session_avg = group['Score'].mean()
-                all_time_avg = all_time_scen_avg.get(scenario, 0)
-                item = { "name": scenario, "play_count": len(group), "first_played": group['Timestamp'].min(), "session_avg": session_avg, "all_time_avg": all_time_avg, "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, "is_pb": is_pb }
-                report_data["scenario"]["played"].append(item); report_data["scenario"]["averages"].append(item)
+                
+                all_time_avg = all_time_scen_stats.loc[scenario]['mean'] if scenario in all_time_scen_stats.index else 0
+                all_time_count = all_time_scen_stats.loc[scenario]['size'] if scenario in all_time_scen_stats.index else 0
+                
+                item = { "name": scenario, "play_count": len(group), "first_played": group['Timestamp'].min(), 
+                         "session_avg": session_avg, "all_time_avg": all_time_avg, "all_time_play_count": all_time_count,
+                         "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, "is_pb": is_pb }
+
+                report_data["scenario"]["played"].append(item)
+                # --- MODIFIED: Only add to averages list if it's not the first time playing ---
+                if not is_first_time:
+                    report_data["scenario"]["averages"].append(item)
+
                 if is_pb:
                     item_pb = item.copy()
-                    item_pb.update({ "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb, "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf') })
+                    item_pb.update({ "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb, 
+                                     "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf') })
                     report_data["scenario"]["pbs"].append(item_pb)
             
             session_date_str = session_start_time.strftime('%B %d, %Y')
             self.after(0, self._show_session_report_window, header_metrics, report_data, session_date_str)
         finally:
             self.after(0, self.status_label.configure, {"text": "Report ready."})
+
+
+    def _calculate_detailed_stats(self, runs_df):
+        # --- CONFIGURATION (FINAL DESIGN) ---
+        config = {
+            'min_runs_for_foundational': 2,
+            'min_runs_for_oracle_message': 10, # A safe minimum for percentile-based verdicts
+            'min_pbs_for_launchpad_analysis': 1,
+            
+            'recent_runs_window_min': 2,
+            'recent_runs_window_max': 20,
+            
+            'launchpad_window_min': 2,
+            'launchpad_window_max': 20,
+        }
+
+        if runs_df is None or runs_df.empty:
+            return {}
+
+        # --- 1. BASIC STATS ---
+        pb_row = runs_df.loc[runs_df['Score'].idxmax()]
+        stats = {
+            'count': len(runs_df),
+            'max': pb_row['Score'],
+            'pb_date': pb_row['Timestamp']
+        }
+        if len(runs_df) < config['min_runs_for_foundational']:
+            return stats
+
+        # --- 2. FOUNDATIONAL STATS (IQR CLEANED) ---
+        q1 = runs_df['Score'].quantile(0.25)
+        q3 = runs_df['Score'].quantile(0.75)
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        cleaned_df = runs_df[runs_df['Score'] >= lower_bound].copy()
+        if cleaned_df.empty: cleaned_df = runs_df.copy()
+
+        p50 = cleaned_df['Score'].quantile(0.50)
+        p75 = cleaned_df['Score'].quantile(0.75)
+        stats.update({
+            'avg': cleaned_df['Score'].mean(),
+            'std': cleaned_df['Score'].std(),
+            'min': cleaned_df['Score'].min(),
+        })
+        if pd.notna(p50): stats['p50'] = p50
+        if pd.notna(p75): stats['p75'] = p75
+            
+        df_sorted = cleaned_df.sort_values('Timestamp').reset_index(drop=True)
+        
+        # --- 3. RECENT RUNS STATS ---
+        if len(df_sorted) >= config['recent_runs_window_min']:
+            num_recent_runs_to_use = min(len(df_sorted), config['recent_runs_window_max'])
+            recent_runs = df_sorted.tail(num_recent_runs_to_use)
+            stats['recent_avg'] = recent_runs['Score'].mean()
+            stats['recent_std'] = recent_runs['Score'].std() if len(recent_runs) > 1 else 0
+
+        # --- 4. LAUNCHPAD STATS ---
+        df_sorted['cummax'] = df_sorted['Score'].cummax()
+        df_sorted['is_pb'] = df_sorted['Score'] > df_sorted['cummax'].shift(1).fillna(0)
+        pb_indices = df_sorted[df_sorted['is_pb']].index.tolist()
+
+        if len(pb_indices) >= config['min_pbs_for_launchpad_analysis']:
+            last_pb_index = pb_indices[-1]
+            if last_pb_index >= config['launchpad_window_min']:
+                num_launchpad_runs_to_use = min(last_pb_index, config['launchpad_window_max'])
+                start = max(0, last_pb_index - num_launchpad_runs_to_use)
+                pre_pb_window = df_sorted.iloc[start:last_pb_index]
+                if not pre_pb_window.empty:
+                    stats['launchpad_avg'] = pre_pb_window['Score'].mean()
+                    stats['launchpad_std'] = pre_pb_window['Score'].std() if len(pre_pb_window) > 1 else 0
+
+        # --- 5. GENERATE VERDICT FROM AVAILABLE SIGNALS ---
+        if len(runs_df) >= config['min_runs_for_oracle_message'] and 'recent_avg' in stats:
+            recent_avg = stats['recent_avg']
+            
+            trend_signal = None
+            if 'p75' in stats and recent_avg > stats['p75']:
+                trend_signal = "Improving"
+            elif 'p50' in stats and recent_avg > stats['p50']:
+                trend_signal = "Plateau"
+            elif 'p50' in stats:
+                trend_signal = "Slump"
+
+            peak_signal = None
+            if 'launchpad_avg' in stats and recent_avg >= (stats['launchpad_avg'] * 0.98):
+                peak_signal = "Matching"
+
+            # *** THIS IS THE CORRECTED SECTION ***
+            verdict = None
+            if trend_signal == "Improving" and peak_signal == "Matching":
+                verdict = "Peaking!"  # Correct, simple text
+            elif trend_signal == "Plateau" and peak_signal == "Matching":
+                verdict = "On a stable peak."
+            elif trend_signal == "Slump" and peak_signal == "Matching":
+                verdict = "New higher floor."
+            elif peak_signal == "Matching":
+                 verdict = "Matching peak conditions."
+            elif trend_signal == "Improving":
+                verdict = "Improving."
+            elif trend_signal == "Plateau":
+                verdict = "On a plateau."
+            elif trend_signal == "Slump":
+                verdict = "In a slump."
+
+            if verdict:
+                stats['oracle'] = verdict
+        
+        return stats
 
     def _show_session_report_window(self, header_metrics, report_data, session_date_str):
         SessionReportWindow(self, header_metrics, report_data, session_date_str)
@@ -733,7 +868,8 @@ class App(customtkinter.CTk):
         self.main_controls_header, self.main_controls_content = self._create_collapsible_section("Options & Analysis", "main_controls", 1); self.main_controls_content.grid_columnconfigure(0, weight=1)
         selection_content_frame = customtkinter.CTkFrame(self.main_controls_content); selection_content_frame.grid(row=0, column=0, sticky="ew", pady=(0,5)); selection_content_frame.grid_columnconfigure(0, weight=1)
         search_frame = customtkinter.CTkFrame(selection_content_frame); search_frame.grid(row=0, column=0, sticky="ew", pady=(0,5)); search_frame.grid_columnconfigure(0, weight=1)
-        user_lists_frame = customtkinter.CTkFrame(selection_content_frame); user_lists_frame.grid(row=1, column=0, sticky="ew"); user_lists_frame.grid_columnconfigure((0,1), weight=1)
+        user_lists_frame = customtkinter.CTkFrame(selection_content_frame); user_lists_frame.grid(row=1, column=0, sticky="ew")
+        user_lists_frame.grid_columnconfigure((0, 1, 2), weight=1)
         self.scenario_entry_label = customtkinter.CTkLabel(search_frame, text="Search for Base Scenario:"); self.scenario_entry_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(5,0))
         self.scenario_search_var = customtkinter.StringVar(); self.scenario_search_var.trace_add("write", self.update_autocomplete)
         self.scenario_entry = customtkinter.CTkEntry(search_frame, textvariable=self.scenario_search_var, state="disabled"); self.scenario_entry.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
@@ -741,6 +877,7 @@ class App(customtkinter.CTk):
         self.autocomplete_listbox = customtkinter.CTkScrollableFrame(search_frame, height=150); self.autocomplete_listbox.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=5); self.autocomplete_listbox.grid_remove()
         self.favorites_frame = customtkinter.CTkFrame(user_lists_frame); self.favorites_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         self.recents_frame = customtkinter.CTkFrame(user_lists_frame); self.recents_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+        self.recently_played_frame = customtkinter.CTkScrollableFrame(user_lists_frame); self.recently_played_frame.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
         self.update_user_lists_display()
         
         display_top_row_frame = customtkinter.CTkFrame(self.main_controls_content); display_top_row_frame.grid(row=1, column=0, sticky="ew"); display_top_row_frame.grid_columnconfigure((0, 1, 2), weight=1, uniform="group1")
@@ -756,7 +893,6 @@ class App(customtkinter.CTk):
         misc_group.grid_columnconfigure(0, weight=1)
         top_misc_frame = customtkinter.CTkFrame(misc_group, fg_color="transparent")
         top_misc_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
-        # --- MODIFIED: Added theme selector ---
         theme_frame = customtkinter.CTkFrame(top_misc_frame, fg_color="transparent")
         theme_frame.pack(side="left", padx=(0,10))
         customtkinter.CTkLabel(theme_frame, text="Theme:").pack(side="left", padx=(0,5))
@@ -776,12 +912,10 @@ class App(customtkinter.CTk):
 
         self.filters_frame = customtkinter.CTkFrame(self.main_controls_content); self.filters_frame.grid(row=2, column=0, sticky="ew", pady=(5,0)); self.format_filter_frame = customtkinter.CTkFrame(self.main_controls_content); self.format_filter_frame.grid(row=3, column=0, sticky="ew", pady=(0,5))
         
-        # This is where we create the "Grid Display Mode / Highlight Mode" section
         analysis_modes_frame = customtkinter.CTkFrame(self.top_frame)
         analysis_modes_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(5,5))
         analysis_modes_frame.grid_columnconfigure((0, 1), weight=1)
 
-        # THIS IS THE FIX: We tell the top_frame grid how to handle empty space
         self.top_frame.grid_rowconfigure(4, weight=1)
 
         grid_mode_frame = customtkinter.CTkFrame(analysis_modes_frame); grid_mode_frame.grid(row=0, column=0, sticky="ew", padx=(0,5))
@@ -833,7 +967,6 @@ class App(customtkinter.CTk):
 
     def on_appearance_mode_change(self, new_mode):
         customtkinter.set_appearance_mode(new_mode)
-        # Redraw any open graph windows to match the new theme
         for child in self.winfo_children():
             if isinstance(child, GraphWindow):
                 child.redraw_plot()
@@ -1068,6 +1201,23 @@ class App(customtkinter.CTk):
         
         formatted_columns = [f"{col}cm" if self.is_float(col) else col for col in grid_data.columns]
         table_values = [formatted_columns] + values
+
+        # --- MODIFIED: Pre-calculation of detailed stats for tooltips ---
+        self.detailed_stats_cache = {}
+        base_df_for_stats = self.current_family_runs
+        if base_df_for_stats is not None:
+            for row in grid_data.itertuples(index=False):
+                scenario_name = getattr(row, 'Scenario', None)
+                if not scenario_name or scenario_name == '-- Averages --': continue
+                
+                row_runs_df = base_df_for_stats[base_df_for_stats['Scenario'] == scenario_name]
+                self.detailed_stats_cache[(scenario_name, "ALL")] = self._calculate_detailed_stats(row_runs_df)
+                
+                for col_name in grid_data.columns:
+                    if self.is_float(col_name):
+                        cell_runs_df = row_runs_df[row_runs_df['Sens'] == float(col_name)]
+                        self.detailed_stats_cache[(scenario_name, col_name)] = self._calculate_detailed_stats(cell_runs_df)
+
         self.results_table = CTkTable(self.bottom_frame, values=table_values, 
                                       header_color=("gray80", "gray25"),
                                       font=("Arial", font_size))
@@ -1076,8 +1226,7 @@ class App(customtkinter.CTk):
         for r in range(self.results_table.rows):
             for c in range(self.results_table.columns):
                 cell = self.results_table.frame.get((r, c))
-                if cell:
-                    cell.configure(height=cell_height)
+                if cell: cell.configure(height=cell_height)
 
         if 'Scenario' in final_col_order: self.results_table.edit_column(0, width=350)
         
@@ -1140,10 +1289,8 @@ class App(customtkinter.CTk):
 
                 try:
                     val = float(row_data[c_idx+1])
-                    if pd.isna(val):
-                        continue
-                except (ValueError, TypeError, IndexError):
-                    continue
+                    if pd.isna(val): continue
+                except (ValueError, TypeError, IndexError): continue
 
                 if mode == "Performance Drop" and r_idx > 0:
                     if col_name not in perf_drop_cols: continue
@@ -1197,35 +1344,63 @@ class App(customtkinter.CTk):
                     cell_widget = self.results_table.frame[r_idx + 1, c_idx]
                     cell_widget.bind("<Button-1>", lambda e, s=scenario_name, cm=col_name: self.on_cell_click(e, s, cm)); cell_widget.configure(cursor="hand2")
 
+    # --- PASTE THIS CODE INTO app.py, REPLACING the existing `def bind_tooltips` in the `App` class ---
+
     def bind_tooltips(self, grid_data):
-        if not self.results_table or grid_data.empty or self.current_summary_data is None: return
+        if not self.results_table or grid_data.empty or not hasattr(self, 'detailed_stats_cache'): return
         
-        indexed_summary = self.current_summary_data.set_index(['Scenario', 'Sens'])
-        
+        scenario_col_idx = grid_data.columns.get_loc('Scenario') if 'Scenario' in grid_data.columns else -1
+        if scenario_col_idx == -1: return
+
+        def make_text_func(key):
+            def get_tooltip_text():
+                stats = self.detailed_stats_cache.get(key)
+                if not stats or stats.get('count', 0) == 0:
+                    return ""
+                
+                pb_date_str = stats['pb_date'].strftime('%Y-%m-%d')
+                text_lines = [
+                    f"PB: {stats['max']:.1f} (on {pb_date_str})",
+                    f"Runs: {stats['count']}"
+                ]
+                if 'avg' in stats:
+                    text_lines.append(f"Avg: {stats['avg']:.1f} (±{stats.get('std', 0):.1f})")
+                
+                # Use a consistent check for percentiles to prevent errors
+                p50_text = f"{stats['p50']:.1f}" if 'p50' in stats else "N/A"
+                p75_text = f"{stats['p75']:.1f}" if 'p75' in stats else "N/A"
+                text_lines.append(f"Median: {p50_text} | 75th: {p75_text}")
+
+                text_lines.append("-" * 25)
+                
+                if 'launchpad_avg' in stats:
+                    text_lines.append(f"Launchpad Avg: {stats['launchpad_avg']:.1f} | Std: {stats.get('launchpad_std', 0):.1f}")
+                
+                if 'recent_avg' in stats:
+                    text_lines.append(f"Recent Avg:    {stats['recent_avg']:.1f} | Std: {stats.get('recent_std', 0):.1f}")
+
+                # Display the final verdict, if one was generated
+                oracle_msg = stats.get('oracle')
+                if oracle_msg:
+                    text_lines.append(oracle_msg)
+                
+                return "\n".join(text_lines)
+            return get_tooltip_text
+
+        # FIX: Corrected typo from it_ertuples to itertuples
         for r_idx, row in enumerate(grid_data.itertuples(index=False)):
             scenario_name = getattr(row, 'Scenario', None)
             if not scenario_name or scenario_name == '-- Averages --': continue
 
+            row_widget = self.results_table.frame[r_idx + 1, scenario_col_idx]
+            tooltip_row = Tooltip(row_widget, make_text_func((scenario_name, "ALL")))
+            self.tooltip_instances.append(tooltip_row)
+
             for c_idx, col_name in enumerate(grid_data.columns):
                 if self.is_float(col_name):
                     cell_widget = self.results_table.frame[r_idx + 1, c_idx]
-                    
-                    def make_text_func(s_name, s_sens):
-                        def get_tooltip_text():
-                            try:
-                                stats = indexed_summary.loc[(s_name, float(s_sens))]
-                                pb = stats.get('PB_Score', 0)
-                                avg = stats.get('Avg_Score', 0)
-                                count = stats.get('Play_Count', 0)
-                                return (f"PB: {pb:.1f}\n"
-                                        f"Avg: {avg:.1f}\n"
-                                        f"Runs: {count}")
-                            except (KeyError, TypeError):
-                                return ""
-                        return get_tooltip_text
-
-                    tooltip = Tooltip(cell_widget, make_text_func(scenario_name, col_name))
-                    self.tooltip_instances.append(tooltip)
+                    tooltip_cell = Tooltip(cell_widget, make_text_func((scenario_name, col_name)))
+                    self.tooltip_instances.append(tooltip_cell)
 
     def bind_hide_events(self, table_values):
         if not self.results_table or not table_values: return
@@ -1275,6 +1450,33 @@ class App(customtkinter.CTk):
         self._populate_manage_hidden_window(tabview)
         if item_type == 'scenario': self.build_filters_and_get_data()
         else: self.display_grid_data()
+
+    def _get_recently_played_bases(self, num_to_scan=300, num_to_return=15):
+        if self.all_runs_df is None or self.all_runs_df.empty:
+            return []
+            
+        recent_uniques_series = self.all_runs_df.drop_duplicates(subset=['Scenario'], keep='last')
+        recent_uniques_list = recent_uniques_series.tail(num_to_scan)['Scenario'].tolist()
+        
+        recency_scores = {name: i for i, name in enumerate(recent_uniques_list)}
+
+        sorted_recents = sorted(recent_uniques_list)
+        
+        base_scenarios = []
+        for scenario in sorted_recents:
+            is_variant = any(scenario.startswith(s + ' ') for s in base_scenarios)
+            if not is_variant:
+                base_scenarios.append(scenario)
+        
+        def get_group_recency_score(base_name):
+            group_members = [s for s in recent_uniques_list if s == base_name or s.startswith(base_name + ' ')]
+            if not group_members: return -1
+            max_score = max(recency_scores.get(member, -1) for member in group_members)
+            return max_score
+
+        base_scenarios.sort(key=get_group_recency_score, reverse=True)
+        
+        return base_scenarios[:num_to_return]
         
     def toggle_favorite(self):
         scenario = self.scenario_search_var.get()
@@ -1290,12 +1492,21 @@ class App(customtkinter.CTk):
         self.save_user_data(); self.update_user_lists_display()
         
     def update_user_lists_display(self):
-        for frame in [self.favorites_frame, self.recents_frame]:
+        for frame in [self.favorites_frame, self.recents_frame, self.recently_played_frame]:
             for widget in frame.winfo_children(): widget.destroy()
+
+        customtkinter.CTkLabel(self.recently_played_frame, text="Recently Played", font=customtkinter.CTkFont(weight="bold")).pack(anchor="w", padx=10)
+        recently_played = self._get_recently_played_bases()
+        for scen in recently_played:
+            selection = {"name": scen, "axis": ""} 
+            btn = customtkinter.CTkButton(self.recently_played_frame, text=scen, fg_color="transparent", anchor="w", command=lambda s=selection: self.select_from_list(s))
+            btn.pack(fill="x", padx=5)
+
         customtkinter.CTkLabel(self.favorites_frame, text="Favorites", font=customtkinter.CTkFont(weight="bold")).pack(anchor="w", padx=10)
         for fav in self.favorites:
             display_text = f"{fav['name']}" + (f"  [{fav['axis']}]" if fav.get('axis') else "")
             btn = customtkinter.CTkButton(self.favorites_frame, text=display_text, fg_color="transparent", anchor="w", command=lambda f=fav: self.select_from_list(f)); btn.pack(fill="x", padx=5)
+        
         customtkinter.CTkLabel(self.recents_frame, text="Recents", font=customtkinter.CTkFont(weight="bold")).pack(anchor="w", padx=10)
         for rec in self.recents:
             display_text = f"{rec['name']}" + (f"  [{rec['axis']}]" if rec.get('axis') else "")

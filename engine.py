@@ -183,6 +183,11 @@ def get_scenario_family_info(all_runs_df, base_scenario):
                 if unit_match:
                     value, unit = unit_match.groups()
                     if unit in UNIT_MAP: modifiers[UNIT_MAP[unit]] = (token, 'standalone'); consumed[i] = True
+                # --- ADDED: Logic to handle standalone percentage values ---
+                elif '%' in token and is_value(token):
+                    modifiers['Percent'] = (token, 'standalone')
+                    consumed[i] = True
+                # --- END OF ADDITION ---
         if not all(consumed):
              memo[scenario_name] = {}
              return {}
