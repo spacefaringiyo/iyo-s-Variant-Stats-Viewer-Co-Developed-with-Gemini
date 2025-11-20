@@ -59,7 +59,7 @@ class App(customtkinter.CTk):
         self.load_user_data()
         customtkinter.set_appearance_mode(self.appearance_mode_var.get())
         
-        self.title("Variant Stats Viewer by iyo & Gemini (Version v1.19)")
+        self.title("Variant Stats Viewer by iyo & Gemini (Version v1.20)")
         if hasattr(self, 'saved_geometry') and self.saved_geometry:
             self.geometry(self.saved_geometry)
         else:
