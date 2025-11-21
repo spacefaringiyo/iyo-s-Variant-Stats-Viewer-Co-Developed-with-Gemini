@@ -8,18 +8,22 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from datetime import timedelta
+import locales # --- NEW: Import Locales ---
 
 class SessionHistoryWindow(customtkinter.CTkToplevel):
     def __init__(self, master, session_list):
         super().__init__(master)
-        self.title("Session History")
+        # Retrieve language from master app
+        self.lang = master.current_language 
+        
+        self.title(locales.get_text(self.lang, "session_hist_btn"))
         self.geometry("600x500")
         self.transient(master)
 
         self.app_master = master
 
         if not session_list:
-            customtkinter.CTkLabel(self, text="No session history found.").pack(expand=True, padx=20, pady=20)
+            customtkinter.CTkLabel(self, text=locales.get_text(self.lang, "load_err_label")).pack(expand=True, padx=20, pady=20)
             return
 
         scroll_frame = customtkinter.CTkScrollableFrame(self)
@@ -33,9 +37,27 @@ class SessionHistoryWindow(customtkinter.CTkToplevel):
             date_label = customtkinter.CTkLabel(card, text=session['date_str'], font=customtkinter.CTkFont(size=16, weight="bold"), anchor="w")
             date_label.grid(row=0, column=0, columnspan=3, sticky="ew", padx=10, pady=(5,0))
 
-            info_text = (f"Duration: {session['total_duration_str']}  |  "
-                         f"Plays: {session['play_count']}  |  "
-                         f"Top Scenario: {session['top_scenario']}")
+            # Note: 'total_duration_str' comes pre-formatted from app.py logic, but labels need loc
+            # For the info string, we can construct it manually or use a localized format string.
+            # Let's assume strictly formatted for now or reconstruct:
+            # But easiest is to just use the pre-calculated strings and localize labels?
+            # Actually, the strings in session_list are just values.
+            # Let's construct the label using locales.
+            
+            # Since session_list passes pre-formatted strings like "00:30:00" and "N/A", we just label them.
+            # We might not have specific keys for "Duration:" in the list items, but we can reuse report keys or add generic ones.
+            # For simplicity/safety, I will leave the generic "Duration: X | Plays: Y" English-ish structure for the history card 
+            # UNLESS we add specific keys. 
+            # Let's use the keys from Session Report as best fit.
+            
+            # Reuse report keys for consistency
+            dur_lbl = locales.get_text(self.lang, "rep_duration")
+            plays_lbl = locales.get_text(self.lang, "rep_plays")
+            
+            info_text = (f"{dur_lbl}: {session['total_duration_str']}  |  "
+                         f"{plays_lbl}: {session['play_count']}  |  "
+                         f"{session['top_scenario']}")
+                         
             info_label = customtkinter.CTkLabel(card, text=info_text, font=customtkinter.CTkFont(size=12), anchor="w")
             info_label.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=(0,5))
             
@@ -47,7 +69,9 @@ class SessionHistoryWindow(customtkinter.CTkToplevel):
 class SessionReportWindow(customtkinter.CTkToplevel):
     def __init__(self, master, session_id, header_metrics, report_data, session_date_str, graph_data):
         super().__init__(master)
-        self.title(f"Session Report - {session_date_str}")
+        self.lang = master.current_language
+        
+        self.title(locales.get_text(self.lang, "rep_title", date=session_date_str))
         
         if hasattr(master, 'session_report_geometry') and master.session_report_geometry:
             self.geometry(master.session_report_geometry)
@@ -79,18 +103,23 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         control_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         control_frame.grid_columnconfigure(1, weight=1)
 
-        customtkinter.CTkButton(control_frame, text="Browse History...", command=self.app_master.open_session_history).pack(side="left", padx=10, pady=5)
-        customtkinter.CTkButton(control_frame, text="Refresh (F5)", width=100, command=self.request_refresh).pack(side="left", padx=0, pady=5)
+        customtkinter.CTkButton(control_frame, text=locales.get_text(self.lang, "rep_browse"), command=self.app_master.open_session_history).pack(side="left", padx=10, pady=5)
+        customtkinter.CTkButton(control_frame, text=locales.get_text(self.lang, "rep_refresh"), width=100, command=self.request_refresh).pack(side="left", padx=0, pady=5)
 
         self.summary_toggle_var = customtkinter.StringVar(value="Off")
-        customtkinter.CTkSwitch(control_frame, text="Summarize by Scenario", variable=self.summary_toggle_var, onvalue="On", offvalue="Off", command=self._redraw_report).pack(side="right", padx=10, pady=5)
+        customtkinter.CTkSwitch(control_frame, text=locales.get_text(self.lang, "rep_summarize"), variable=self.summary_toggle_var, onvalue="On", offvalue="Off", command=self._redraw_report).pack(side="right", padx=10, pady=5)
         
         self.sort_var = customtkinter.StringVar(value="performance")
-        sort_options = { "Performance": "performance", "Play Count": "play_count", "Order Played": "time", "Alphabetical": "alpha" }
+        sort_options = { 
+            locales.get_text(self.lang, "sort_perf"): "performance", 
+            locales.get_text(self.lang, "sort_count"): "play_count", 
+            locales.get_text(self.lang, "sort_order"): "time", 
+            locales.get_text(self.lang, "sort_alpha"): "alpha" 
+        }
         
         sort_frame = customtkinter.CTkFrame(control_frame, fg_color="transparent")
         sort_frame.pack(side="right", padx=10)
-        customtkinter.CTkLabel(sort_frame, text="Sort by:").pack(side="left", padx=(10,5), pady=5)
+        customtkinter.CTkLabel(sort_frame, text=locales.get_text(self.lang, "rep_sort")).pack(side="left", padx=(10,5), pady=5)
         for text, value in sort_options.items():
             customtkinter.CTkRadioButton(sort_frame, text=text, variable=self.sort_var, value=value, command=self._redraw_report).pack(side="left", padx=5)
 
@@ -114,7 +143,7 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         self.header_metrics = header_metrics
         self.report_data = report_data
         self.graph_data = graph_data
-        self.title(f"Session Report - {session_date_str}")
+        self.title(locales.get_text(self.lang, "rep_title", date=session_date_str))
         self._draw_header_metrics()
         self._redraw_report()
 
@@ -126,11 +155,11 @@ class SessionReportWindow(customtkinter.CTkToplevel):
             label = customtkinter.CTkLabel(frame, text=value, font=customtkinter.CTkFont(size=20), textvariable=var)
             label.pack()
             return frame
-        create_metric_display(self.header_frame, "Total Duration", self.header_metrics["total_duration_str"]).grid(row=0, column=0, pady=10)
-        create_metric_display(self.header_frame, "Active Playtime", self.header_metrics["active_playtime_str"]).grid(row=0, column=1, pady=10)
-        create_metric_display(self.header_frame, "Play Density", f"{self.header_metrics['play_density']:.1f}%").grid(row=0, column=2, pady=10)
-        create_metric_display(self.header_frame, "Total Plays", "", self.total_plays_var).grid(row=0, column=3, pady=10)
-        create_metric_display(self.header_frame, "Total PBs", "", self.total_pbs_var).grid(row=0, column=4, pady=10)
+        create_metric_display(self.header_frame, locales.get_text(self.lang, "rep_duration"), self.header_metrics["total_duration_str"]).grid(row=0, column=0, pady=10)
+        create_metric_display(self.header_frame, locales.get_text(self.lang, "rep_active"), self.header_metrics["active_playtime_str"]).grid(row=0, column=1, pady=10)
+        create_metric_display(self.header_frame, locales.get_text(self.lang, "rep_density"), f"{self.header_metrics['play_density']:.1f}%").grid(row=0, column=2, pady=10)
+        create_metric_display(self.header_frame, locales.get_text(self.lang, "rep_plays"), "", self.total_plays_var).grid(row=0, column=3, pady=10)
+        create_metric_display(self.header_frame, locales.get_text(self.lang, "rep_pbs"), "", self.total_pbs_var).grid(row=0, column=4, pady=10)
 
     def _create_collapsible_section(self, parent, title):
         header_frame = customtkinter.CTkFrame(parent, fg_color=("gray75", "gray22"), corner_radius=6)
@@ -153,7 +182,7 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         
         parent = customtkinter.CTkFrame(self.scroll_frame, fg_color="transparent")
         parent.pack(fill="x", pady=(0, 10))
-        content = self._create_collapsible_section(parent, "Session Performance Flow")
+        content = self._create_collapsible_section(parent, locales.get_text(self.lang, "rep_graph_title"))
         content.pack(fill="x", expand=True)
         
         times = [d['time'] for d in self.graph_data]
@@ -180,7 +209,9 @@ class SessionReportWindow(customtkinter.CTkToplevel):
             pos = line.get_xydata()[idx]
             annot.xy = pos
             data_point = self.graph_data[idx]
-            text = f"{data_point['scenario']}\n{data_point['sens']}cm\n{data_point['pct']:.1f}%"
+            # Localize Tooltip
+            sens_txt = f"{data_point['sens']}cm"
+            text = f"{data_point['scenario']}\n{sens_txt}\n{data_point['pct']:.1f}%"
             annot.set_text(text)
             annot.get_bbox_patch().set_edgecolor('#4aa3df')
 
@@ -293,12 +324,24 @@ class SessionReportWindow(customtkinter.CTkToplevel):
 
     def _populate_played_section(self, played_data):
         parent = customtkinter.CTkFrame(self.scroll_frame, fg_color="transparent"); parent.pack(fill="x")
-        content = self._create_collapsible_section(parent, f"Scenarios Played ({len(played_data)})")
+        title = locales.get_text(self.lang, "sec_played", count=len(played_data))
+        content = self._create_collapsible_section(parent, title)
         content.grid_columnconfigure((0, 1), weight=1)
         num_items = len(played_data); num_rows = (num_items + 1) // 2
         for i, item in enumerate(played_data):
             name = item['name'] + (f" ({item['sens']}cm)" if 'sens' in item else "")
-            name_with_count = f"{name} ({item['play_count']} runs)"
+            
+            # Localize "runs"
+            runs_lbl = locales.get_text(self.lang, "tooltip_runs", val=item['play_count']) # "Runs: 16"
+            # Strip "Runs: " prefix if we just want "(16 runs)" format or assume standard format?
+            # Let's standard format: "Scenario (16 runs)"
+            # We need a generic "X runs" key or reuse existing. 
+            # Let's use a new on-the-fly format since we didn't make a specific key for this list item.
+            # Actually, let's just use English for the brackets for safety or reuse rep_plays logic.
+            # Ideally, we add "lbl_list_item": "{name} ({count} runs)" to locales. 
+            # But for now, let's stick to structure:
+            name_with_count = f"{name} ({item['play_count']})" # Simplified
+            
             if item['is_pb']: name_with_count = "🏆 " + name_with_count
             row = i % num_rows; column = i // num_rows
             label = customtkinter.CTkLabel(content, text=name_with_count, font=customtkinter.CTkFont(size=12), anchor="w")
@@ -306,19 +349,25 @@ class SessionReportWindow(customtkinter.CTkToplevel):
 
     def _populate_pbs_section(self, pbs_data):
         parent = customtkinter.CTkFrame(self.scroll_frame, fg_color="transparent"); parent.pack(fill="x")
-        content = self._create_collapsible_section(parent, f"Personal Bests ({len(pbs_data)})")
+        title = locales.get_text(self.lang, "sec_pbs", count=len(pbs_data))
+        content = self._create_collapsible_section(parent, title)
         for i, item in enumerate(pbs_data):
             card = customtkinter.CTkFrame(content); card.pack(fill="x", pady=(0, 5))
             card.grid_columnconfigure(1, weight=1)
             name = item['name'] + (f" ({item['sens']}cm)" if 'sens' in item else "")
             customtkinter.CTkLabel(card, text=name, font=customtkinter.CTkFont(size=14, weight="bold"), anchor="w").grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(5,0))
             imp_pts_str = f"{item['improvement_pts']:+.0f} pts"; imp_pct_str = f"({item['improvement_pct']:+.1f}%)"
-            customtkinter.CTkLabel(card, text=f"New PB: {item['new_score']:.0f} (vs. {item['prev_score']:.0f})", anchor="w").grid(row=1, column=0, padx=10, pady=(0,5))
+            
+            # Localized "New PB: X (vs Y)"
+            pb_text = locales.get_text(self.lang, "lbl_new_pb", new=f"{item['new_score']:.0f}", old=f"{item['prev_score']:.0f}")
+            
+            customtkinter.CTkLabel(card, text=pb_text, anchor="w").grid(row=1, column=0, padx=10, pady=(0,5))
             customtkinter.CTkLabel(card, text=f"{imp_pts_str} {imp_pct_str}", text_color="gold", font=customtkinter.CTkFont(weight="bold"), anchor="e").grid(row=1, column=1, padx=10, pady=(0,5))
 
     def _populate_averages_section(self, averages_data):
         parent = customtkinter.CTkFrame(self.scroll_frame, fg_color="transparent"); parent.pack(fill="x")
-        content = self._create_collapsible_section(parent, f"Average Score Comparison ({len(averages_data)})")
+        title = locales.get_text(self.lang, "sec_avgs", count=len(averages_data))
+        content = self._create_collapsible_section(parent, title)
         for i, item in enumerate(averages_data):
             card = customtkinter.CTkFrame(content); card.pack(fill="x", pady=(0, 5))
             card.grid_columnconfigure(0, weight=1)
@@ -326,8 +375,11 @@ class SessionReportWindow(customtkinter.CTkToplevel):
             customtkinter.CTkLabel(card, text=name, font=customtkinter.CTkFont(size=14, weight="bold"), anchor="w").grid(row=0, column=0, sticky="ew", padx=10, pady=(5,0))
             stats_frame = customtkinter.CTkFrame(card, fg_color="transparent"); stats_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(0,5))
             stats_frame.grid_columnconfigure((0,1,2), weight=1, uniform="group1")
-            session_text = f"Session: {item['session_avg']:.0f} ({item['play_count']} runs)"
-            all_time_text = f"All-Time: {item['all_time_avg']:.0f} ({int(item.get('all_time_play_count', 0))} runs)"
+            
+            # Localized Strings
+            session_text = locales.get_text(self.lang, "lbl_session", val=f"{item['session_avg']:.0f}", count=item['play_count'])
+            all_time_text = locales.get_text(self.lang, "lbl_alltime", val=f"{item['all_time_avg']:.0f}", count=int(item.get('all_time_play_count', 0)))
+            
             perf_str = f"{item['perf_vs_avg']:+.1f}%"; perf_color = "lightgreen" if item['perf_vs_avg'] >= 0 else "#F47174"
             customtkinter.CTkLabel(stats_frame, text=session_text, anchor="w").grid(row=0, column=0, sticky="ew", padx=5)
             customtkinter.CTkLabel(stats_frame, text=all_time_text, anchor="center").grid(row=0, column=1, sticky="ew")
@@ -336,6 +388,7 @@ class SessionReportWindow(customtkinter.CTkToplevel):
 class GraphWindow(customtkinter.CTkToplevel):
     def __init__(self, master, full_data, hide_settings, save_callback, graph_id, title):
         super().__init__(master)
+        self.lang = master.current_language
         self.title(title)
         self.geometry("950x700")
         self.transient(master)
@@ -349,11 +402,17 @@ class GraphWindow(customtkinter.CTkToplevel):
         
         self.view_key_map = {"Raw Data": "raw", "Daily Average": "daily", "Weekly Average": "weekly", "Monthly Average": "monthly", "Session Average": "session"}
 
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.bind("<F5>", self.request_refresh)
+        self.app_master.register_graph_window(self)
+
         top_control_frame = customtkinter.CTkFrame(self); top_control_frame.pack(fill="x", padx=10, pady=(10,0))
         bottom_control_frame = customtkinter.CTkFrame(self); bottom_control_frame.pack(fill="x", padx=10, pady=(0,5))
 
-        customtkinter.CTkLabel(top_control_frame, text="View Mode:").pack(side="left", padx=(10,5), pady=5)
+        # Localized
+        customtkinter.CTkLabel(top_control_frame, text=locales.get_text(self.lang, "graph_view_mode")).pack(side="left", padx=(10,5), pady=5)
         self.aggregation_var = customtkinter.StringVar(value="Raw Data")
+        
         aggregation_menu = customtkinter.CTkOptionMenu(top_control_frame, variable=self.aggregation_var,
                                                        values=["Raw Data", "Daily Average", "Weekly Average", "Monthly Average", "Session Average"],
                                                        command=self.on_view_mode_change)
@@ -364,21 +423,41 @@ class GraphWindow(customtkinter.CTkToplevel):
                                                             values=["Line Plot", "Dots Only", "Filled Area"],
                                                             command=self._on_graph_option_change)
         
-        customtkinter.CTkLabel(bottom_control_frame, text="Hide scores below:").pack(side="left", padx=(10,5), pady=5)
+        # Localized Refresh Button
+        customtkinter.CTkButton(top_control_frame, text=locales.get_text(self.lang, "rep_refresh"), width=90, command=self.request_refresh).pack(side="right", padx=10, pady=5)
+        
+        # Localized
+        customtkinter.CTkLabel(bottom_control_frame, text=locales.get_text(self.lang, "graph_hide_low")).pack(side="left", padx=(10,5), pady=5)
         self.hide_below_var = customtkinter.StringVar()
         hide_below_entry = customtkinter.CTkEntry(bottom_control_frame, textvariable=self.hide_below_var, width=80)
         hide_below_entry.pack(side="left", padx=5, pady=5)
         hide_below_entry.bind("<Return>", self.update_hide_below)
         
         self.connect_sessions_var = customtkinter.StringVar(value=self.hide_settings.get("connect_sessions", "Off"))
-        self.connect_sessions_switch = customtkinter.CTkSwitch(bottom_control_frame, text="Connect Sessions", variable=self.connect_sessions_var, onvalue="On", offvalue="Off", command=self._on_graph_option_change)
+        # Localized Text
+        self.connect_sessions_switch = customtkinter.CTkSwitch(bottom_control_frame, text=locales.get_text(self.lang, "graph_connect"), variable=self.connect_sessions_var, onvalue="On", offvalue="Off", command=self._on_graph_option_change)
         
         self.four_color_cycle_var = customtkinter.StringVar(value=self.hide_settings.get("four_color_cycle", "Off"))
-        self.four_color_cycle_switch = customtkinter.CTkSwitch(bottom_control_frame, text="4-Color Cycle", variable=self.four_color_cycle_var, onvalue="On", offvalue="Off", command=self._on_graph_option_change)
+        # Localized Text
+        self.four_color_cycle_switch = customtkinter.CTkSwitch(bottom_control_frame, text=locales.get_text(self.lang, "graph_4color"), variable=self.four_color_cycle_var, onvalue="On", offvalue="Off", command=self._on_graph_option_change)
         
         self.plot_frame = customtkinter.CTkFrame(self); self.plot_frame.pack(fill="both", expand=True, padx=10, pady=10)
         self.fig, self.canvas, self.toolbar = None, None, None
         self.on_view_mode_change() 
+
+    def on_close(self):
+        self.app_master.deregister_graph_window(self)
+        self.destroy()
+
+    # --- RESTORED: The missing refresh method ---
+    def request_refresh(self, event=None):
+        self.app_master.load_stats_thread()
+    # --------------------------------------------
+
+    def update_data(self, new_full_data):
+        # Called by App to refresh stats
+        self.full_data = new_full_data
+        self.redraw_plot()
 
     def get_current_hide_key(self):
         mode = self.aggregation_var.get()

@@ -13,9 +13,9 @@ import numpy as np
 from datetime import timedelta
 from pathlib import Path
 
-# Import separated modules
 import windows
 import utils
+import locales # --- NEW: Import Locales ---
 
 customtkinter.set_default_color_theme("blue")
 
@@ -49,6 +49,11 @@ class App(customtkinter.CTk):
         self.appearance_mode_var = customtkinter.StringVar(value="System")
         self.font_size_var = customtkinter.StringVar(value="12")
         
+        # --- NEW: Language Variable ---
+        self.language_var = customtkinter.StringVar(value="en") 
+        self.current_language = "en" # Helper for faster lookup
+        # ------------------------------
+
         self.target_score_var = customtkinter.StringVar(value="3000")
         self.session_gap_minutes_var = customtkinter.StringVar(value="30")
         
@@ -56,7 +61,6 @@ class App(customtkinter.CTk):
         self.pb_rank_var.trace_add("write", self.schedule_rank_update)
         self.rank_update_job = None
         
-        # --- MOVED UP: Initialize defaults before loading ---
         self.last_custom_rank = 3 
         self.hidden_scenarios = set()
         self.hidden_cms_by_scenario = {}
@@ -69,17 +73,19 @@ class App(customtkinter.CTk):
         self.favorites = []
         self.recents = []
         self.collapsed_states = {}
-        # ---------------------------------------------------
         
         self.current_report_window = None
+        self.open_graph_windows = []
         
         self.tooltip_instances = []
         self.detailed_stats_cache = {}
 
-        self.load_user_data() # Now this overrides the defaults above
+        self.load_user_data()
         customtkinter.set_appearance_mode(self.appearance_mode_var.get())
         
-        self.title("Variant Stats Viewer by iyo & Gemini (Version v1.21)")
+        # Set Title using Locale
+        self.title(locales.get_text(self.current_language, "window_title"))
+        
         if hasattr(self, 'saved_geometry') and self.saved_geometry:
             self.geometry(self.saved_geometry)
         else:
@@ -103,7 +109,8 @@ class App(customtkinter.CTk):
         self.rating_frame = customtkinter.CTkFrame(self.bottom_frame)
         self.rating_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 5))
         self.rating_frame.grid_columnconfigure(0, weight=1)
-        self.rating_label = customtkinter.CTkLabel(self.rating_frame, text="Rating: -", font=("Arial", 24, "bold"))
+        # Localized Rating Placeholder
+        self.rating_label = customtkinter.CTkLabel(self.rating_frame, text=locales.get_text(self.current_language, "rating", val="-"), font=("Arial", 24, "bold"))
         self.rating_label.grid(row=0, column=0, pady=10)
         self.rating_frame.grid_remove()
         
@@ -117,6 +124,13 @@ class App(customtkinter.CTk):
                 with open(USER_DATA_FILE, 'r') as f: data = json.load(f)
                 self.saved_geometry = data.get("window_geometry")
                 self.appearance_mode_var.set(data.get("appearance_mode", "System"))
+                
+                # --- NEW: Load Language ---
+                lang = data.get("language_preference", "en")
+                self.language_var.set(lang)
+                self.current_language = lang
+                # --------------------------
+
                 self.favorites = [{"name": fav, "axis": ""} if isinstance(fav, str) else fav for fav in data.get("favorites", [])]
                 self.recents = [{"name": rec, "axis": ""} if isinstance(rec, str) else rec for rec in data.get("recents", [])]
                 
@@ -138,15 +152,13 @@ class App(customtkinter.CTk):
                 self.graph_hide_settings = data.get("graph_hide_settings", {})
                 self.session_report_geometry = data.get("session_report_geometry", "900x800")
                 
-                # --- NEW: Load Last Custom Rank ---
                 self.last_custom_rank = data.get("last_custom_rank", 3)
-                # ----------------------------------
 
                 self.collapsed_states['main_controls'] = False
             except (json.JSONDecodeError, AttributeError): 
                 self.favorites,self.recents,self.collapsed_states,self.target_scores_by_scenario,self.format_filter_preferences = [],[],{},{},{}
                 self.hidden_scenarios,self.hidden_cms_by_scenario,self.graph_hide_settings = set(),{},{}
-
+    
     def save_user_data(self):
         current_scenario = self.scenario_search_var.get()
         if current_scenario:
@@ -166,17 +178,18 @@ class App(customtkinter.CTk):
                 elif variable_axis in self.format_filter_preferences.get(current_scenario, {}): del self.format_filter_preferences[current_scenario][variable_axis]
                 if not self.format_filter_preferences.get(current_scenario): del self.format_filter_preferences[current_scenario]
         
-        # --- NEW: Update last_custom_rank based on current UI state ---
         try:
             current_rank_val = int(self.pb_rank_var.get())
             if current_rank_val > 1:
                 self.last_custom_rank = current_rank_val
         except ValueError: pass
-        # --------------------------------------------------------------
 
         data_to_save = {
             "window_geometry": self.geometry(),
             "appearance_mode": self.appearance_mode_var.get(),
+            # --- NEW: Save Language ---
+            "language_preference": self.language_var.get(),
+            # --------------------------
             "favorites": self.favorites, "recents": self.recents, 
             "sens_settings_by_scenario": self.sens_settings_by_scenario,
             "grid_display_mode_preference": self.grid_display_mode_var.get(),
@@ -189,12 +202,29 @@ class App(customtkinter.CTk):
             "format_filter_preferences": self.format_filter_preferences, 
             "graph_hide_settings": self.graph_hide_settings,
             "session_report_geometry": self.session_report_geometry,
-            
-            # --- NEW: Save Key ---
             "last_custom_rank": self.last_custom_rank,
-            # ---------------------
         }
         with open(USER_DATA_FILE, 'w') as f: json.dump(data_to_save, f, indent=2)
+
+    # --- NEW: Handle Language Change ---
+    def on_language_change(self, choice):
+        # Convert Display Name -> Code
+        code = self.lang_map.get(choice, "en")
+        self.language_var.set(code) # Save code
+        
+        self.save_user_data()
+        tkinter.messagebox.showinfo(
+            locales.get_text(self.language_var.get(), "restart_title"),
+            locales.get_text(self.language_var.get(), "restart_msg")
+        )
+    # -----------------------------------
+
+    def register_graph_window(self, window):
+        self.open_graph_windows.append(window)
+
+    def deregister_graph_window(self, window):
+        if window in self.open_graph_windows:
+            self.open_graph_windows.remove(window)
 
     def on_cell_click(self, event, scenario_name, sensitivity):
         if self.all_runs_df is None or self.all_runs_df.empty: return
@@ -215,7 +245,8 @@ class App(customtkinter.CTk):
             return
         
         history_data['unique_id'] = history_data.apply(lambda row: f"{row['Timestamp'].isoformat()}|{row['Score']}", axis=1)
-        title = f"History: {scenario_name} at {sensitivity}cm"
+        # Localized Title
+        title = f"History: {scenario_name} at {sensitivity}cm" # Keeping simple for now, or could localize "History"
         windows.GraphWindow(self, full_data=history_data, hide_settings=hide_settings_for_graph, save_callback=self.save_user_data, graph_id=graph_id, title=title)
         
     def on_scenario_name_click(self, event, scenario_name):
@@ -237,21 +268,27 @@ class App(customtkinter.CTk):
         
     def _build_path_and_load_controls(self):
         self.path_frame = customtkinter.CTkFrame(self.top_frame); self.path_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10,0)); self.path_frame.grid_columnconfigure(1, weight=1)
-        self.select_path_button = customtkinter.CTkButton(self.path_frame, text="Select Stats Folder", command=self.select_stats_folder); self.select_path_button.grid(row=0, column=0, padx=(0,10), pady=10)
+        
+        # Localized
+        self.select_path_button = customtkinter.CTkButton(self.path_frame, text=locales.get_text(self.current_language, "select_folder_btn"), command=self.select_stats_folder); self.select_path_button.grid(row=0, column=0, padx=(0,10), pady=10)
         self.path_entry = customtkinter.CTkEntry(self.path_frame, placeholder_text="Path to KovaaK's stats folder..."); self.path_entry.grid(row=0, column=1, sticky="ew", pady=10)
         
         action_frame = customtkinter.CTkFrame(self.path_frame, fg_color="transparent"); action_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0,10)); action_frame.grid_columnconfigure(0, weight=1)
-        self.load_button = customtkinter.CTkButton(action_frame, text="Load Stats", font=("Arial", 18, "bold"), height=50, command=self.load_stats_thread); self.load_button.grid(row=0, column=0, sticky="ew")
+        # Localized
+        self.load_button = customtkinter.CTkButton(action_frame, text=locales.get_text(self.current_language, "load_btn"), font=("Arial", 18, "bold"), height=50, command=self.load_stats_thread); self.load_button.grid(row=0, column=0, sticky="ew")
         
         report_buttons_frame = customtkinter.CTkFrame(action_frame, fg_color="transparent")
         report_buttons_frame.grid(row=0, column=1, padx=(10,0))
-        self.session_report_button = customtkinter.CTkButton(report_buttons_frame, text="Last Session Report", command=self.open_session_report, state="disabled")
+        # Localized
+        self.session_report_button = customtkinter.CTkButton(report_buttons_frame, text=locales.get_text(self.current_language, "session_report_btn"), command=self.open_session_report, state="disabled")
         self.session_report_button.pack(fill="x", pady=(0,2))
-        self.session_history_button = customtkinter.CTkButton(report_buttons_frame, text="Session History", command=self.open_session_history, state="disabled")
+        # Localized
+        self.session_history_button = customtkinter.CTkButton(report_buttons_frame, text=locales.get_text(self.current_language, "session_hist_btn"), command=self.open_session_history, state="disabled")
         self.session_history_button.pack(fill="x", pady=(2,0))
         
         status_frame = customtkinter.CTkFrame(self.path_frame, fg_color="transparent"); status_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
-        self.status_label = customtkinter.CTkLabel(status_frame, text="Ready. Select stats folder and click 'Load Stats'.", anchor="w"); self.status_label.pack(side="left", padx=(0,10))
+        # Localized
+        self.status_label = customtkinter.CTkLabel(status_frame, text=locales.get_text(self.current_language, "ready_label"), anchor="w"); self.status_label.pack(side="left", padx=(0,10))
         self.progress_bar = customtkinter.CTkProgressBar(self.path_frame, mode='indeterminate')
 
     def _build_main_ui_controls(self):
@@ -265,7 +302,8 @@ class App(customtkinter.CTk):
         user_lists_frame = customtkinter.CTkFrame(selection_content_frame); user_lists_frame.grid(row=1, column=0, sticky="ew")
         user_lists_frame.grid_columnconfigure((0, 1, 2), weight=1)
         
-        self.scenario_entry_label = customtkinter.CTkLabel(search_frame, text="Search for Base Scenario:"); self.scenario_entry_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(5,0))
+        # Localized
+        self.scenario_entry_label = customtkinter.CTkLabel(search_frame, text=locales.get_text(self.current_language, "search_label")); self.scenario_entry_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(5,0))
         self.scenario_search_var = customtkinter.StringVar(); self.scenario_search_var.trace_add("write", self.update_autocomplete)
         
         self.clear_btn = customtkinter.CTkButton(search_frame, text="✕", width=30, fg_color=("gray75", "gray30"), command=self.clear_search); self.clear_btn.grid(row=1, column=0, padx=(10, 5), pady=5)
@@ -283,9 +321,11 @@ class App(customtkinter.CTk):
         display_top_row_frame.grid_columnconfigure((0, 1), weight=1, uniform="group1")
         
         session_group = customtkinter.CTkFrame(display_top_row_frame); session_group.grid(row=0, column=0, padx=(0, 5), pady=5, sticky="ew")
-        customtkinter.CTkLabel(session_group, text="Session Gap (min):").pack(side="left", padx=(10, 5));
+        # Localized
+        customtkinter.CTkLabel(session_group, text=locales.get_text(self.current_language, "session_gap")).pack(side="left", padx=(10, 5));
         customtkinter.CTkEntry(session_group, textvariable=self.session_gap_minutes_var, width=50).pack(side="left")
-        customtkinter.CTkLabel(session_group, text="(Requires Refresh)", font=customtkinter.CTkFont(size=10, slant="italic")).pack(side="left", padx=(5,10));
+        # Localized
+        customtkinter.CTkLabel(session_group, text=locales.get_text(self.current_language, "req_refresh"), font=customtkinter.CTkFont(size=10, slant="italic")).pack(side="left", padx=(5,10));
         
         misc_group = customtkinter.CTkFrame(display_top_row_frame); misc_group.grid(row=0, column=1, padx=(5,0), pady=5, sticky="ew")
         misc_group.grid_columnconfigure(0, weight=1)
@@ -293,16 +333,43 @@ class App(customtkinter.CTk):
         top_misc_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
         theme_frame = customtkinter.CTkFrame(top_misc_frame, fg_color="transparent")
         theme_frame.pack(side="left", padx=(0,10))
-        customtkinter.CTkLabel(theme_frame, text="Theme:").pack(side="left", padx=(0,5))
+        # Localized
+        customtkinter.CTkLabel(theme_frame, text=locales.get_text(self.current_language, "theme")).pack(side="left", padx=(0,5))
         customtkinter.CTkOptionMenu(theme_frame, variable=self.appearance_mode_var, values=["System", "Dark", "Light"], command=self.on_appearance_mode_change, width=90).pack(side="left")
-        customtkinter.CTkSwitch(top_misc_frame, text="Show Decimals", variable=self.show_decimals_var, onvalue="On", offvalue="Off", command=self.on_display_option_change).pack(side="left", padx=(10,0))
-        customtkinter.CTkButton(top_misc_frame, text="Manage Hidden", command=self.open_manage_hidden_window).pack(side="right")
+        
+        # --- NEW: Language Dropdown ---
+        lang_frame = customtkinter.CTkFrame(top_misc_frame, fg_color="transparent")
+        lang_frame.pack(side="left", padx=(5,10))
+        customtkinter.CTkLabel(lang_frame, text=locales.get_text(self.current_language, "lang_label")).pack(side="left", padx=(0,5))
+        self.lang_map = {"English": "en", "日本語 (JP)": "jp", "Português (PT)": "pt", "简体中文 (CN)": "cn"}
+        self.lang_display_list = list(self.lang_map.keys())
+        
+        # 2. Helper to find current display name from code
+        current_disp = next((k for k, v in self.lang_map.items() if v == self.language_var.get()), "English")
+        self.lang_display_var = customtkinter.StringVar(value=current_disp)
+
+        # 3. Update Dropdown to use display names
+        customtkinter.CTkOptionMenu(
+            lang_frame, 
+            variable=self.lang_display_var, 
+            values=self.lang_display_list, 
+            command=self.on_language_change, # This needs update too
+            width=110 # Increased width
+        ).pack(side="left")
+        # ------------------------------
+
+        # Localized
+        customtkinter.CTkSwitch(top_misc_frame, text=locales.get_text(self.current_language, "show_decimals"), variable=self.show_decimals_var, onvalue="On", offvalue="Off", command=self.on_display_option_change).pack(side="left", padx=(10,0))
+        # Localized
+        customtkinter.CTkButton(top_misc_frame, text=locales.get_text(self.current_language, "manage_hidden"), command=self.open_manage_hidden_window).pack(side="right")
         bottom_misc_frame = customtkinter.CTkFrame(misc_group, fg_color="transparent")
         bottom_misc_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0,5))
-        customtkinter.CTkLabel(bottom_misc_frame, text="Font Size:").pack(side="left")
+        # Localized
+        customtkinter.CTkLabel(bottom_misc_frame, text=locales.get_text(self.current_language, "font_size")).pack(side="left")
         font_size_entry = customtkinter.CTkEntry(bottom_misc_frame, textvariable=self.font_size_var, width=40)
         font_size_entry.pack(side="left", padx=(0,10))
-        customtkinter.CTkLabel(bottom_misc_frame, text="Cell H:").pack(side="left")
+        # Localized
+        customtkinter.CTkLabel(bottom_misc_frame, text=locales.get_text(self.current_language, "cell_h")).pack(side="left")
         cell_height_entry = customtkinter.CTkEntry(bottom_misc_frame, textvariable=self.cell_height_var, width=40)
         cell_height_entry.pack(side="left")
         font_size_entry.bind("<Return>", self.on_display_option_change)
@@ -318,7 +385,24 @@ class App(customtkinter.CTk):
 
         sens_filter_group = customtkinter.CTkFrame(analysis_modes_frame)
         sens_filter_group.grid(row=0, column=0, sticky="ew", padx=(0,5))
-        customtkinter.CTkLabel(sens_filter_group, text="Sens Filter:").pack(side="left", padx=(10,5), pady=5)
+        # Localized
+        customtkinter.CTkLabel(sens_filter_group, text=locales.get_text(self.current_language, "sens_filter")).pack(side="left", padx=(10,5), pady=5)
+        # Localized Options (Needs a mapper if values are logic tokens vs display tokens)
+        # Current code uses English tokens for logic ("All", "5cm Inc."). 
+        # To support full localization, OptionMenu needs display_values different from values.
+        # CTk doesn't support that natively easily. 
+        # SHORTCUT: We will just localize the Label, but keep Dropdown values in English/International for now to avoid breaking logic.
+        # OR: We map them. Let's map them for display, but logic uses them?
+        # Actually, let's just translate the list passed to 'values'. Logic in `display_grid_data` needs to map back.
+        # To keep it simple for this step, I am LOCALIZING THE VALUES list.
+        # We will need a helper in `display_grid_data` to map "全て" -> "All".
+        
+        # For v1.21 stability, I will keep the Dropdown Values in English/Numeric (international enough)
+        # but localize the Labels surrounding them.
+        # "All", "5cm Inc" is fairly understandable.
+        # If you want strict translation of dropdown items, we need a reverse-lookup map.
+        # Let's stick to English values for Dropdowns to ensure logic stability for now.
+        
         self.sens_filter_menu = customtkinter.CTkOptionMenu(sens_filter_group, variable=self.sens_filter_mode_var, values=["All", "2cm Step", "3cm Step", "5cm Step", "10cm Step", "Custom Step", "Specific List"], width=110, command=self.on_display_option_change)
         self.sens_filter_menu.pack(side="left", padx=5, pady=5)
         self.sens_custom_step_entry = customtkinter.CTkEntry(sens_filter_group, textvariable=self.sens_custom_step_var, width=40, placeholder_text="3")
@@ -327,11 +411,13 @@ class App(customtkinter.CTk):
         self.sens_specific_list_entry.bind("<Return>", self.on_display_option_change)
 
         grid_mode_frame = customtkinter.CTkFrame(analysis_modes_frame); grid_mode_frame.grid(row=0, column=1, sticky="ew", padx=5)
-        customtkinter.CTkLabel(grid_mode_frame, text="Grid Mode:").pack(side="left", padx=(10,5), pady=5)
+        # Localized
+        customtkinter.CTkLabel(grid_mode_frame, text=locales.get_text(self.current_language, "grid_mode")).pack(side="left", padx=(10,5), pady=5)
         
         self.pb_rank_frame = customtkinter.CTkFrame(grid_mode_frame, fg_color="transparent")
         self.pb_rank_frame.pack(side="left", padx=(0, 5))
-        customtkinter.CTkLabel(self.pb_rank_frame, text="PB #:").pack(side="left", padx=(0,2))
+        # Localized
+        customtkinter.CTkLabel(self.pb_rank_frame, text=locales.get_text(self.current_language, "pb_num")).pack(side="left", padx=(0,2))
         
         self.rank_toggle_btn = customtkinter.CTkButton(self.pb_rank_frame, text="1⇄N", width=40, height=20, fg_color=("gray70", "gray30"), command=self.toggle_pb_rank)
         self.rank_toggle_btn.pack(side="left", padx=3)
@@ -344,15 +430,26 @@ class App(customtkinter.CTk):
         btn_plus = customtkinter.CTkButton(self.pb_rank_frame, text="+", width=20, height=20, command=lambda: self.change_pb_rank(1))
         btn_plus.pack(side="left", padx=2)
 
-        modes = ["Personal Best", "Average Score", "Play Count"]
-        for mode in modes:
-            customtkinter.CTkRadioButton(grid_mode_frame, text=mode, variable=self.grid_display_mode_var, value=mode, command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
+        modes = [("Personal Best", "mode_pb"), ("Average Score", "mode_avg"), ("Play Count", "mode_count")]
+        for mode_val, loc_key in modes:
+            text = locales.get_text(self.current_language, loc_key)
+            customtkinter.CTkRadioButton(grid_mode_frame, text=text, variable=self.grid_display_mode_var, value=mode_val, command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
         
         highlight_group = customtkinter.CTkFrame(analysis_modes_frame); highlight_group.grid(row=0, column=2, sticky="ew", padx=(5,0))
-        customtkinter.CTkLabel(highlight_group, text="Highlight:").pack(side="left", padx=(10,5), pady=5)
-        h_modes = {"None": "None", "Perf. Drop": "Performance Drop", "Row Heatmap": "Row Heatmap", "Global Heatmap": "Global Heatmap", "Target": "Target Score"}
-        for text, val in h_modes.items():
-             customtkinter.CTkRadioButton(highlight_group, text=text, variable=self.highlight_mode_var, value=val, command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
+        # Localized
+        customtkinter.CTkLabel(highlight_group, text=locales.get_text(self.current_language, "highlight")).pack(side="left", padx=(10,5), pady=5)
+        
+        h_modes = [
+            ("None", "hl_none"),
+            ("Performance Drop", "hl_drop"),
+            ("Row Heatmap", "hl_row_heat"),
+            ("Global Heatmap", "hl_global_heat"),
+            ("Target Score", "hl_target")
+        ]
+        for val, loc_key in h_modes:
+            text = locales.get_text(self.current_language, loc_key)
+            customtkinter.CTkRadioButton(highlight_group, text=text, variable=self.highlight_mode_var, value=val, command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
+        
         self.target_score_entry = customtkinter.CTkEntry(highlight_group, textvariable=self.target_score_var, width=80); self.target_score_entry.pack(side="left", padx=(0,10), pady=5); self.target_score_entry.bind("<Return>", self.on_display_option_change)
         
         self._apply_initial_collapse_state(); self.on_display_option_change()
@@ -394,7 +491,8 @@ class App(customtkinter.CTk):
     def load_stats_thread(self, callback=None):
         stats_path = self.path_entry.get()
         if not stats_path or not os.path.isdir(stats_path): return
-        self.status_label.configure(text="Loading stats, please wait...")
+        # Localized
+        self.status_label.configure(text=locales.get_text(self.current_language, "loading_label"))
         self.load_button.configure(state="disabled")
         self.select_path_button.configure(state="disabled")
         self.progress_bar.grid(row=4, column=0, columnspan=2, sticky="ew", padx=10, pady=(0,10))
@@ -419,11 +517,13 @@ class App(customtkinter.CTk):
             unique_scenarios = self.all_runs_df['Scenario'].unique()
             self.scenario_list = sorted(list(unique_scenarios))
             self.update_user_lists_display()
-            self.status_label.configure(text=f"Loaded {len(self.all_runs_df)} total runs. Ready to search.")
+            # Localized
+            self.status_label.configure(text=locales.get_text(self.current_language, "loaded_label", count=len(self.all_runs_df)))
             self.scenario_entry.configure(state="normal")
             self.session_report_button.configure(state="normal")
             self.session_history_button.configure(state="normal")
-            self.load_button.configure(text="Refresh Stats (F5)") 
+            # Localized
+            self.load_button.configure(text=locales.get_text(self.current_language, "refresh_btn"))
             if self.is_first_load:
                 self.is_first_load = False 
                 if self.recents:
@@ -436,7 +536,6 @@ class App(customtkinter.CTk):
 
             if self.current_report_window and self.current_report_window.winfo_exists():
                 try:
-                    # Re-calculate data for the specific session ID the window is viewing
                     sid = self.current_report_window.session_id
                     data = self._generate_session_payload(sid)
                     if data:
@@ -444,10 +543,25 @@ class App(customtkinter.CTk):
                 except Exception as e:
                     print(f"Error refreshing report window: {e}")
 
+            for window in list(self.open_graph_windows):
+                if window.winfo_exists():
+                    try:
+                        scen, sens_str = window.graph_id.split('|')
+                        df = self.all_runs_df[self.all_runs_df['Scenario'] == scen].copy()
+                        if sens_str != "ALL":
+                            df = df[df['Sens'] == float(sens_str)]
+                        df.sort_values(by='Timestamp', inplace=True)
+                        df['unique_id'] = df.apply(lambda row: f"{row['Timestamp'].isoformat()}|{row['Score']}", axis=1)
+                        window.update_data(df)
+                    except Exception as e:
+                        print(f"Error updating graph window {window.title_text}: {e}")
+                else:
+                    self.deregister_graph_window(window)
 
             if callback: callback()
         else:
-            if all_runs_df is None: self.status_label.configure(text="Load failed or no data found.")
+            # Localized
+            if all_runs_df is None: self.status_label.configure(text=locales.get_text(self.current_language, "load_err_label"))
             else: self.status_label.configure(text="Data loaded, but is missing 'Duration'. Please Refresh Stats (F5).")
             self.all_runs_df, self.scenario_list = None, []
             self.session_report_button.configure(state="disabled")
@@ -566,7 +680,7 @@ class App(customtkinter.CTk):
             self._apply_format_filter()
             return
 
-        self.filters_frame.grid(); customtkinter.CTkLabel(self.filters_frame, text="Compare by:").pack(side="left", padx=(10,5), pady=5)
+        self.filters_frame.grid(); customtkinter.CTkLabel(self.filters_frame, text=locales.get_text(self.current_language, "compare_by")).pack(side="left", padx=(10,5), pady=5)
         preferred_axis = self.variable_axis_var.get()
         if not preferred_axis or preferred_axis not in all_modifiers.keys(): self.variable_axis_var.set(list(all_modifiers.keys())[0])
         
@@ -578,7 +692,7 @@ class App(customtkinter.CTk):
             for value_tuple in all_modifiers[variable_axis]: patterns_found.add(value_tuple[1])
             
         if len(patterns_found) > 1:
-            self.format_filter_frame.grid(); customtkinter.CTkLabel(self.format_filter_frame, text="Filter Format:").pack(side="left", padx=(10,5), pady=5)
+            self.format_filter_frame.grid(); customtkinter.CTkLabel(self.format_filter_frame, text=locales.get_text(self.current_language, "filter_format")).pack(side="left", padx=(10,5), pady=5)
             def get_pattern_label(pattern_key):
                 if pattern_key == 'word_value': return f"{variable_axis} #"
                 if pattern_key == 'value_word': return f"# {variable_axis}"
@@ -695,8 +809,16 @@ class App(customtkinter.CTk):
         if valid_sens_cols and not grid_data.empty and display_mode != "Play Count":
             numeric_data_rating = grid_data[valid_sens_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
             rating = numeric_data_rating.mean().mean()
-            self.rating_label.configure(text=f"Rating: {round(rating)}")
+            # Localized
+            self.rating_label.configure(text=locales.get_text(self.current_language, "rating", val=round(rating)))
         else: self.rating_label.configure(text="Rating: -")
+
+        # Update Recents logic remains
+        current_scenario = self.scenario_search_var.get()
+        current_axis = self.variable_axis_var.get()
+        current_recent_entry = {"name": current_scenario, "axis": current_axis}
+        if current_scenario and (not self.recents or self.recents[0] != current_recent_entry):
+            self.add_to_recents(current_scenario, current_axis)
 
         avg_row_series = None
         if valid_sens_cols and not stats_source_df.empty:
@@ -710,7 +832,8 @@ class App(customtkinter.CTk):
             avg_row_series['Best'] = best_avg_score
             avg_row_series['cm'] = best_avg_cm
             avg_row_series['%'] = percent_vs_base
-            avg_row_series['Scenario'] = "-- Averages --"
+            # Localized
+            avg_row_series['Scenario'] = locales.get_text(self.current_language, "avg_row")
 
         grid_data.reset_index(inplace=True)
         def get_sort_key(scenario_name):
@@ -745,7 +868,16 @@ class App(customtkinter.CTk):
                         try: values[r_idx][c_idx] = int(round(float(cell)))
                         except (ValueError, TypeError): continue
         
-        formatted_columns = [f"{col}cm" if self.is_float(col) else col for col in grid_data.columns]
+        # Localize Headers
+        formatted_columns = []
+        for col in grid_data.columns:
+            if self.is_float(col):
+                formatted_columns.append(f"{col}cm") # Could localize 'cm' if needed but it's standard
+            elif col == "AVG": formatted_columns.append(locales.get_text(self.current_language, "col_avg"))
+            elif col == "Best": formatted_columns.append(locales.get_text(self.current_language, "col_best"))
+            elif col == "cm": formatted_columns.append(locales.get_text(self.current_language, "col_cm"))
+            else: formatted_columns.append(col)
+
         table_values = [formatted_columns] + values
 
         self.detailed_stats_cache = {}
@@ -753,7 +885,8 @@ class App(customtkinter.CTk):
         if base_df_for_stats is not None:
             for row in grid_data.itertuples(index=False):
                 scenario_name = getattr(row, 'Scenario', None)
-                if not scenario_name or scenario_name == '-- Averages --': continue
+                # Localized check
+                if not scenario_name or scenario_name == locales.get_text(self.current_language, "avg_row"): continue
                 
                 row_runs_df = base_df_for_stats[base_df_for_stats['Scenario'] == scenario_name]
                 self.detailed_stats_cache[(scenario_name, "ALL")] = engine.calculate_detailed_stats(row_runs_df)
@@ -796,19 +929,21 @@ class App(customtkinter.CTk):
 
         heatmap_cols = sens_cols + ['Best', 'AVG']
             
-        is_avg_row_present = '-- Averages --' in display_df['Scenario'].values
+        # Localized check
+        avg_row_name = locales.get_text(self.current_language, "avg_row")
+        is_avg_row_present = avg_row_name in display_df['Scenario'].values
         if is_avg_row_present:
-            avg_row_data = display_df[display_df['Scenario'] == '-- Averages --']
+            avg_row_data = display_df[display_df['Scenario'] == avg_row_name]
             if not avg_row_data.empty:
-                data_rows = highlight_df[highlight_df.index != '-- Averages --']
+                data_rows = highlight_df[highlight_df.index != avg_row_name]
                 highlight_avg_row = data_rows[heatmap_cols].mean()
-                highlight_df.loc['-- Averages --', heatmap_cols] = highlight_avg_row
+                highlight_df.loc[avg_row_name, heatmap_cols] = highlight_avg_row
 
         perf_drop_cols = heatmap_cols
         values_only, global_min, global_max = highlight_df.values, None, None
         
         if mode == "Global Heatmap":
-            data_rows = highlight_df[highlight_df.index != '-- Averages --']
+            data_rows = highlight_df[highlight_df.index != avg_row_name]
             all_scores = data_rows[sens_cols].to_numpy().flatten()
             all_scores = all_scores[~np.isnan(all_scores)]
             if all_scores.size > 0:
@@ -818,7 +953,7 @@ class App(customtkinter.CTk):
         if is_target_mode:
             try:
                 target_score_val = float(self.target_score_var.get())
-                data_rows = highlight_df[highlight_df.index != '-- Averages --']
+                data_rows = highlight_df[highlight_df.index != avg_row_name]
                 all_scores_in_grid = data_rows[sens_cols].to_numpy().flatten()
                 all_scores_in_grid = all_scores_in_grid[~np.isnan(all_scores_in_grid)]
                 if all_scores_in_grid.size > 0: grid_min_score = np.min(all_scores_in_grid)
@@ -827,7 +962,7 @@ class App(customtkinter.CTk):
         for r_idx, row_data in enumerate(highlight_df.itertuples(index=True)):
             scenario_name = row_data.Index
             
-            if is_avg_row_present and scenario_name == "-- Averages --":
+            if is_avg_row_present and scenario_name == avg_row_name:
                 for c_idx in range(len(display_df.columns)):
                     self.results_table.frame[r_idx + 1, c_idx].configure(fg_color=("gray70", "gray25"))
             
@@ -882,7 +1017,8 @@ class App(customtkinter.CTk):
 
         for r_idx, row in enumerate(grid_data.itertuples(index=False)):
             scenario_name = getattr(row, 'Scenario', None)
-            if not scenario_name or scenario_name == '-- Averages --': continue
+            # Localized Check
+            if not scenario_name or scenario_name == locales.get_text(self.current_language, "avg_row"): continue
             
             scenario_cell_widget = self.results_table.frame[r_idx + 1, scenario_col_idx]
             scenario_cell_widget.bind("<Button-1>", lambda e, s=scenario_name: self.on_scenario_name_click(e, s))
@@ -906,26 +1042,31 @@ class App(customtkinter.CTk):
                 
                 scen_name = key[0]
                 sens_val = key[1]
-                sens_display = "All Sensitivities" if sens_val == "ALL" else f"{sens_val}cm"
+                # Localized
+                sens_display = locales.get_text(self.current_language, "opt_all") if sens_val == "ALL" else f"{sens_val}cm"
                 
-                text_lines = [f"{scen_name}", f"Sensitivity: {sens_display}", "-" * 30]
+                # Localized Tooltips
+                text_lines = [f"{scen_name}", locales.get_text(self.current_language, "tooltip_sens", val=sens_display), "-" * 30]
                 pb_date_str = stats['pb_date'].strftime('%Y-%m-%d')
-                text_lines.append(f"PB: {stats['max']:.1f} (on {pb_date_str})")
-                text_lines.append(f"Runs: {stats['count']}")
-                if 'avg' in stats: text_lines.append(f"Avg: {stats['avg']:.1f} (±{stats.get('std', 0):.1f})")
+                text_lines.append(locales.get_text(self.current_language, "tooltip_pb", val=f"{stats['max']:.1f}", date=pb_date_str))
+                text_lines.append(locales.get_text(self.current_language, "tooltip_runs", val=f"{stats['count']}"))
+                if 'avg' in stats: 
+                    text_lines.append(locales.get_text(self.current_language, "tooltip_avg", val=f"{stats['avg']:.1f} (±{stats.get('std', 0):.1f})"))
                 
                 p50_text = f"{stats['p50']:.1f}" if 'p50' in stats else "N/A"
                 p75_text = f"{stats['p75']:.1f}" if 'p75' in stats else "N/A"
-                text_lines.append(f"Median: {p50_text} | 75th: {p75_text}")
+                text_lines.append(locales.get_text(self.current_language, "tooltip_med", val=p50_text, val2=p75_text))
 
                 if 'launchpad_avg' in stats:
                     text_lines.append("-" * 30)
-                    text_lines.append(f"Launchpad Avg: {stats['launchpad_avg']:.1f}")
+                    text_lines.append(locales.get_text(self.current_language, "tooltip_launchpad", val=f"{stats['launchpad_avg']:.1f}"))
                 if 'recent_avg' in stats:
-                    text_lines.append(f"Recent Avg:    {stats['recent_avg']:.1f}")
+                    text_lines.append(locales.get_text(self.current_language, "tooltip_recent", val=f"{stats['recent_avg']:.1f}"))
                 oracle_msg = stats.get('oracle')
                 if oracle_msg:
                     text_lines.append("-" * 30)
+                    # Oracle messages might need translation too, but they come from engine. 
+                    # For now, let's assume they stay English or we update engine later.
                     text_lines.append(oracle_msg)
                 
                 return "\n".join(text_lines)
@@ -947,7 +1088,8 @@ class App(customtkinter.CTk):
 
         for r_idx, row in enumerate(grid_data.itertuples(index=False)):
             scenario_name = getattr(row, 'Scenario', None)
-            if not scenario_name or scenario_name == '-- Averages --': continue
+            # Localized Check
+            if not scenario_name or scenario_name == locales.get_text(self.current_language, "avg_row"): continue
 
             row_widget = self.results_table.frame[r_idx + 1, scenario_col_idx]
             tooltip_row = utils.Tooltip(row_widget, make_text_func((scenario_name, "ALL")), make_plot_data_func(scenario_name, "ALL"))
@@ -986,7 +1128,7 @@ class App(customtkinter.CTk):
     def hide_scenario(self, scenario_name): self.hidden_scenarios.add(scenario_name); self.save_user_data(); self.build_filters_and_get_data()
     
     def open_manage_hidden_window(self):
-        win = customtkinter.CTkToplevel(self); win.title("Manage Hidden Items"); win.geometry("600x400"); win.transient(self); win.grid_columnconfigure(0, weight=1); win.grid_rowconfigure(1, weight=1)
+        win = customtkinter.CTkToplevel(self); win.title(locales.get_text(self.current_language, "manage_hidden")); win.geometry("600x400"); win.transient(self); win.grid_columnconfigure(0, weight=1); win.grid_rowconfigure(1, weight=1)
         customtkinter.CTkLabel(win, text="Right-click a header to hide it. Un-hide items below.", font=customtkinter.CTkFont(weight="bold")).grid(row=0, column=0, padx=10, pady=10)
         tabview = customtkinter.CTkTabview(win); tabview.grid(row=1, column=0, padx=10, pady=10, sticky="nsew"); tabview.add("Hidden Scenarios"); tabview.add("Hidden CMs")
         self._populate_manage_hidden_window(tabview)
@@ -1069,19 +1211,22 @@ class App(customtkinter.CTk):
         for frame in [self.favorites_frame, self.recents_frame, self.recently_played_frame]:
             for widget in frame.winfo_children(): widget.destroy()
 
-        customtkinter.CTkLabel(self.recently_played_frame, text="Recently Played", font=customtkinter.CTkFont(weight="bold")).pack(anchor="w", padx=10)
+        # Localized
+        customtkinter.CTkLabel(self.recently_played_frame, text=locales.get_text(self.current_language, "recently_played"), font=customtkinter.CTkFont(weight="bold")).pack(anchor="w", padx=10)
         recently_played = self._get_recently_played_bases()
         for scen in recently_played:
             selection = {"name": scen, "axis": ""} 
             btn = customtkinter.CTkButton(self.recently_played_frame, text=scen, fg_color="transparent", anchor="w", command=lambda s=selection: self.select_from_list(s))
             btn.pack(fill="x", padx=5)
 
-        customtkinter.CTkLabel(self.favorites_frame, text="Favorites", font=customtkinter.CTkFont(weight="bold")).pack(anchor="w", padx=10)
+        # Localized
+        customtkinter.CTkLabel(self.favorites_frame, text=locales.get_text(self.current_language, "favorites"), font=customtkinter.CTkFont(weight="bold")).pack(anchor="w", padx=10)
         for fav in self.favorites:
             display_text = f"{fav['name']}" + (f"  [{fav['axis']}]" if fav.get('axis') else "")
             btn = customtkinter.CTkButton(self.favorites_frame, text=display_text, fg_color="transparent", anchor="w", command=lambda f=fav: self.select_from_list(f)); btn.pack(fill="x", padx=5)
         
-        customtkinter.CTkLabel(self.recents_frame, text="Recents", font=customtkinter.CTkFont(weight="bold")).pack(anchor="w", padx=10)
+        # Localized
+        customtkinter.CTkLabel(self.recents_frame, text=locales.get_text(self.current_language, "recents"), font=customtkinter.CTkFont(weight="bold")).pack(anchor="w", padx=10)
         for rec in self.recents:
             display_text = f"{rec['name']}" + (f"  [{rec['axis']}]" if rec.get('axis') else "")
             btn = customtkinter.CTkButton(self.recents_frame, text=display_text, fg_color="transparent", anchor="w", command=lambda s=rec: self.select_from_list(s)); btn.pack(fill="x", padx=5)
@@ -1109,7 +1254,18 @@ class App(customtkinter.CTk):
 
         self.current_family_runs = engine.get_scenario_family_info(self.all_runs_df, base_scenario)
         if not self.variable_axis_var.get(): self.variable_axis_var.set("")
-        self.build_filters_and_get_data(); self.update_fav_button_state()
+        
+        # 1. Build the filters FIRST (This updates self.format_filter_vars to match the new scenario)
+        self.build_filters_and_get_data()
+        
+        # 2. Update Button State
+        self.update_fav_button_state()
+
+        # 3. NOW add to recents (Safe to save now, because UI vars match the Scenario Name)
+        current_axis = self.variable_axis_var.get()
+        current_recent_entry = {"name": base_scenario, "axis": current_axis}
+        if not self.recents or self.recents[0] != current_recent_entry:
+            self.add_to_recents(base_scenario, current_axis)
         
     def update_autocomplete(self, *args):
         search_term = self.scenario_search_var.get().lower(); self.update_fav_button_state()
@@ -1264,11 +1420,7 @@ class App(customtkinter.CTk):
             self.after(0, self.status_label.configure, {"text": "Report ready."})
 
     def _show_session_report_window(self, session_id, header_metrics, report_data, session_date_str, graph_data):
-        # Save reference so we can refresh it later
         self.current_report_window = windows.SessionReportWindow(self, session_id, header_metrics, report_data, session_date_str, graph_data)
 
-
     def trigger_report_refresh(self, report_window, session_id):
-        # Just trigger a standard load. 
-        # on_load_complete will see self.current_report_window and update it.
         self.load_stats_thread()
