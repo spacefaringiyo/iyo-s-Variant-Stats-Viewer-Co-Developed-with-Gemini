@@ -9,7 +9,6 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from datetime import timedelta
 
-# --- WINDOW CLASS: SessionHistoryWindow ---
 class SessionHistoryWindow(customtkinter.CTkToplevel):
     def __init__(self, master, session_list):
         super().__init__(master)
@@ -45,46 +44,43 @@ class SessionHistoryWindow(customtkinter.CTkToplevel):
             date_label.bind("<Button-1>", command)
             info_label.bind("<Button-1>", command)
 
-
 class SessionReportWindow(customtkinter.CTkToplevel):
-    def __init__(self, master, header_metrics, report_data, session_date_str, graph_data):
+    def __init__(self, master, session_id, header_metrics, report_data, session_date_str, graph_data):
         super().__init__(master)
         self.title(f"Session Report - {session_date_str}")
-        self.geometry("900x800") # Made slightly taller/wider for graph
+        
+        if hasattr(master, 'session_report_geometry') and master.session_report_geometry:
+            self.geometry(master.session_report_geometry)
+        else:
+            self.geometry("900x800")
+        
         self.transient(master)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
         
         self.app_master = master
+        self.session_id = session_id
         self.header_metrics = header_metrics
         self.report_data = report_data
         self.graph_data = graph_data
+        
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.bind("<F5>", self.request_refresh)
 
-        header_frame = customtkinter.CTkFrame(self, fg_color=("gray85", "gray20"))
-        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
-        header_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
-
-        def create_metric_display(parent, title, value, var=None):
-            frame = customtkinter.CTkFrame(parent, fg_color="transparent")
-            customtkinter.CTkLabel(frame, text=title, font=customtkinter.CTkFont(size=12, weight="bold")).pack()
-            label = customtkinter.CTkLabel(frame, text=value, font=customtkinter.CTkFont(size=20), textvariable=var)
-            label.pack()
-            return frame
+        self.header_frame = customtkinter.CTkFrame(self, fg_color=("gray85", "gray20"))
+        self.header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        self.header_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
         self.total_plays_var = customtkinter.StringVar()
         self.total_pbs_var = customtkinter.StringVar()
+        self._draw_header_metrics()
 
-        create_metric_display(header_frame, "Total Duration", self.header_metrics["total_duration_str"]).grid(row=0, column=0, pady=10)
-        create_metric_display(header_frame, "Active Playtime", self.header_metrics["active_playtime_str"]).grid(row=0, column=1, pady=10)
-        create_metric_display(header_frame, "Play Density", f"{self.header_metrics['play_density']:.1f}%").grid(row=0, column=2, pady=10)
-        create_metric_display(header_frame, "Total Plays", "", self.total_plays_var).grid(row=0, column=3, pady=10)
-        create_metric_display(header_frame, "Total PBs", "", self.total_pbs_var).grid(row=0, column=4, pady=10)
-        
         control_frame = customtkinter.CTkFrame(self)
         control_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         control_frame.grid_columnconfigure(1, weight=1)
 
         customtkinter.CTkButton(control_frame, text="Browse History...", command=self.app_master.open_session_history).pack(side="left", padx=10, pady=5)
+        customtkinter.CTkButton(control_frame, text="Refresh (F5)", width=100, command=self.request_refresh).pack(side="left", padx=0, pady=5)
 
         self.summary_toggle_var = customtkinter.StringVar(value="Off")
         customtkinter.CTkSwitch(control_frame, text="Summarize by Scenario", variable=self.summary_toggle_var, onvalue="On", offvalue="Off", command=self._redraw_report).pack(side="right", padx=10, pady=5)
@@ -102,9 +98,39 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         self.scroll_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.scroll_frame.grid_columnconfigure(0, weight=1)
 
-        # --- NEW: Initial Draw call ---
         self._draw_performance_graph()
         self._redraw_report()
+
+    def on_close(self):
+        self.app_master.session_report_geometry = self.geometry()
+        self.app_master.save_user_data()
+        self.destroy()
+
+    def request_refresh(self, event=None):
+        if hasattr(self.app_master, 'trigger_report_refresh'):
+            self.app_master.trigger_report_refresh(self, self.session_id)
+
+    def update_content(self, header_metrics, report_data, session_date_str, graph_data):
+        self.header_metrics = header_metrics
+        self.report_data = report_data
+        self.graph_data = graph_data
+        self.title(f"Session Report - {session_date_str}")
+        self._draw_header_metrics()
+        self._redraw_report()
+
+    def _draw_header_metrics(self):
+        for w in self.header_frame.winfo_children(): w.destroy()
+        def create_metric_display(parent, title, value, var=None):
+            frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+            customtkinter.CTkLabel(frame, text=title, font=customtkinter.CTkFont(size=12, weight="bold")).pack()
+            label = customtkinter.CTkLabel(frame, text=value, font=customtkinter.CTkFont(size=20), textvariable=var)
+            label.pack()
+            return frame
+        create_metric_display(self.header_frame, "Total Duration", self.header_metrics["total_duration_str"]).grid(row=0, column=0, pady=10)
+        create_metric_display(self.header_frame, "Active Playtime", self.header_metrics["active_playtime_str"]).grid(row=0, column=1, pady=10)
+        create_metric_display(self.header_frame, "Play Density", f"{self.header_metrics['play_density']:.1f}%").grid(row=0, column=2, pady=10)
+        create_metric_display(self.header_frame, "Total Plays", "", self.total_plays_var).grid(row=0, column=3, pady=10)
+        create_metric_display(self.header_frame, "Total PBs", "", self.total_pbs_var).grid(row=0, column=4, pady=10)
 
     def _create_collapsible_section(self, parent, title):
         header_frame = customtkinter.CTkFrame(parent, fg_color=("gray75", "gray22"), corner_radius=6)
@@ -130,23 +156,19 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         content = self._create_collapsible_section(parent, "Session Performance Flow")
         content.pack(fill="x", expand=True)
         
-        # Prepare Data
         times = [d['time'] for d in self.graph_data]
         pcts = [d['pct'] for d in self.graph_data]
         
-        # Setup Plot
         plt.style.use('dark_background' if customtkinter.get_appearance_mode() == "Dark" else 'seaborn-v0_8-whitegrid')
         fig = Figure(figsize=(8, 6.5), dpi=100) 
         ax = fig.add_subplot(111)
         
-        # Plot Lines - picker=5 for clicking
         line, = ax.plot(times, pcts, color='#4aa3df', marker='o', markersize=3, linestyle='-', linewidth=1.5, alpha=0.8, picker=5)
         
         ax.axhline(0, color='gray', linestyle='--', linewidth=1, alpha=0.5) 
         ax.fill_between(times, pcts, 0, where=(np.array(pcts) >= 0), color='green', alpha=0.15, interpolate=True)
         ax.fill_between(times, pcts, 0, where=(np.array(pcts) < 0), color='red', alpha=0.15, interpolate=True)
 
-        # --- Hover Annotation (The "Hitbox Confirmation") ---
         annot = ax.annotate("", xy=(0,0), xytext=(10,10), textcoords="offset points",
                             bbox=dict(boxstyle="round", fc="#242424", ec="white", alpha=0.9),
                             arrowprops=dict(arrowstyle="->", color="white"),
@@ -157,12 +179,9 @@ class SessionReportWindow(customtkinter.CTkToplevel):
             idx = ind["ind"][0]
             pos = line.get_xydata()[idx]
             annot.xy = pos
-            
-            # Get data for tooltip
             data_point = self.graph_data[idx]
             text = f"{data_point['scenario']}\n{data_point['sens']}cm\n{data_point['pct']:.1f}%"
             annot.set_text(text)
-            # Adjust coloring based on positive/negative
             annot.get_bbox_patch().set_edgecolor('#4aa3df')
 
         def on_hover(event):
@@ -179,10 +198,9 @@ class SessionReportWindow(customtkinter.CTkToplevel):
                         fig.canvas.draw_idle()
 
         fig.canvas.mpl_connect("motion_notify_event", on_hover)
-        # --------------------------------------------------
 
-        # --- Pick Event (Clicking) ---
         def on_pick(event):
+            if event.mouseevent.button != 1: return
             if event.artist != line: return
             ind = event.ind[0]
             if ind < len(self.graph_data):
@@ -190,9 +208,7 @@ class SessionReportWindow(customtkinter.CTkToplevel):
                 self.app_master.on_cell_click(None, data_point['scenario'], data_point['sens'])
 
         fig.canvas.mpl_connect('pick_event', on_pick)
-        # -----------------------------
 
-        # Grouping Logic
         blocks = []
         if self.graph_data:
             current_block = {
@@ -218,8 +234,6 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         y_min, y_max = ax.get_ylim()
         y_range = y_max - y_min
         if y_range < 5: y_range = 10 
-        
-        # High ceiling for text
         ax.set_ylim(y_min, y_max + (y_range * 1.8))
 
         ax.spines['top'].set_visible(False)
@@ -236,9 +250,7 @@ class SessionReportWindow(customtkinter.CTkToplevel):
                 total_sec = (block['end_time'] - block['start_time']).total_seconds()
                 center_time = block['start_time'] + timedelta(seconds=total_sec/2)
 
-            # --- NO TRUNCATION ---
             label_text = f"{block['scen']} ({block['sens']}cm)"
-            
             base_y = y_max + (y_range * 0.10)
             offset_y = (y_range * 0.20) if i % 2 != 0 else 0
             text_y = base_y + offset_y
@@ -258,14 +270,10 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         canvas.get_tk_widget().pack(fill="both", expand=True, ipady=20)
 
     def _redraw_report(self):
-        # Remove existing widgets EXCEPT the graph (which is the first child of scroll_frame)
-        # Actually, easiest to clear all and redraw graph + lists to ensure order
         for widget in self.scroll_frame.winfo_children(): widget.destroy()
         
-        # 1. Draw Graph
         self._draw_performance_graph()
 
-        # 2. Draw Lists
         view_mode = "scenario" if self.summary_toggle_var.get() == "On" else "grid"
         sort_mode = self.sort_var.get()
         data = self.report_data[view_mode]
@@ -320,7 +328,6 @@ class SessionReportWindow(customtkinter.CTkToplevel):
             stats_frame.grid_columnconfigure((0,1,2), weight=1, uniform="group1")
             session_text = f"Session: {item['session_avg']:.0f} ({item['play_count']} runs)"
             all_time_text = f"All-Time: {item['all_time_avg']:.0f} ({int(item.get('all_time_play_count', 0))} runs)"
-            
             perf_str = f"{item['perf_vs_avg']:+.1f}%"; perf_color = "lightgreen" if item['perf_vs_avg'] >= 0 else "#F47174"
             customtkinter.CTkLabel(stats_frame, text=session_text, anchor="w").grid(row=0, column=0, sticky="ew", padx=5)
             customtkinter.CTkLabel(stats_frame, text=all_time_text, anchor="center").grid(row=0, column=1, sticky="ew")
@@ -429,20 +436,14 @@ class GraphWindow(customtkinter.CTkToplevel):
         
         mode = self.aggregation_var.get()
         
-        # --- NEW: Calculate Stats for Reference Lines ---
         if not self.visible_data.empty:
             mean_val = self.visible_data['Score'].mean()
             p75_val = self.visible_data['Score'].quantile(0.75)
             
-            # Plot lines
-            # Avg: Grey, Dashed
             ax.axhline(mean_val, color='gray', linestyle='--', linewidth=1, label=f'Avg ({mean_val:.0f})', alpha=0.7)
             
-            # P75: Green, Dotted/Dashed
-            # Use a slightly brighter green to stand out on dark bg
             p75_color = '#66bb6a' if customtkinter.get_appearance_mode() == "Dark" else '#2e7d32'
             ax.axhline(p75_val, color=p75_color, linestyle='--', linewidth=1, label=f'75th ({p75_val:.0f})', alpha=0.8)
-        # -----------------------------------------------
 
         if mode == "Raw Data": self.draw_raw_data_plot(ax)
         else: self.draw_aggregated_plot(ax, mode)
@@ -450,7 +451,6 @@ class GraphWindow(customtkinter.CTkToplevel):
         ax.set_title(self.title_text, fontsize=16); ax.set_ylabel("Score", fontsize=12)
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
         
-        # Add Legend to show what the lines are
         ax.legend(loc='best', fontsize='small', framealpha=0.5)
 
         self.fig.tight_layout()
@@ -524,7 +524,6 @@ class GraphWindow(customtkinter.CTkToplevel):
         period_map = {"Daily Average": "D", "Weekly Average": "W", "Monthly Average": "M", "Session Average": "Session"}
         agg_data = engine.aggregate_data(self.visible_data, period=period_map[mode])
         
-        # Prepare ID for tooltips or reference if needed (kept from old code)
         if period_map[mode] == "Session":
             agg_data['id'] = agg_data['SessionID'].astype(str)
         else:
@@ -535,23 +534,19 @@ class GraphWindow(customtkinter.CTkToplevel):
         plot_data = agg_data
         if plot_data.empty: return
 
-        # Use a nice color for the aggregated line
         line_color = '#2ca0c2' 
         
         min_score, max_score = plot_data['Score'].min(), plot_data['Score'].max()
         padding = (max_score - min_score) * 0.05 if max_score > min_score else 10
         ax.set_ylim(min_score - padding, max_score + padding)
 
-        # --- CHANGED: Plotting Logic (Matches Raw Data Style) ---
         if period_map[mode] == "Session":
-            # Integer X-axis for Sessions
             x_vals = np.arange(len(plot_data))
             ax.plot(x_vals, plot_data['Score'], color=line_color, marker='o', markersize=4, linestyle='-', alpha=0.8)
             ax.fill_between(x_vals, plot_data['Score'], color=line_color, alpha=0.2)
             
             ax.set_xlabel("Session", fontsize=12)
             ax.set_xticks(x_vals)
-            # Only show every Nth label if there are too many sessions
             if len(x_vals) > 20:
                 n = len(x_vals) // 20 + 1
                 ax.set_xticks(x_vals[::n])
@@ -559,7 +554,6 @@ class GraphWindow(customtkinter.CTkToplevel):
             else:
                 ax.set_xticklabels([f"S{int(sid)}" for sid in plot_data['SessionID']], rotation=45, ha='right')
         else:
-            # Date X-axis for Time
             ax.plot(plot_data['Timestamp'], plot_data['Score'], color=line_color, marker='o', markersize=4, linestyle='-', alpha=0.8)
             ax.fill_between(plot_data['Timestamp'], plot_data['Score'], color=line_color, alpha=0.2)
             
