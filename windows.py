@@ -67,7 +67,7 @@ class SessionHistoryWindow(customtkinter.CTkToplevel):
             info_label.bind("<Button-1>", command)
 
 class SessionReportWindow(customtkinter.CTkToplevel):
-    def __init__(self, master, session_id, header_metrics, report_data, session_date_str, graph_data):
+    def __init__(self, master, session_id, header_metrics, report_data, session_date_str, graph_data_payload):
         super().__init__(master)
         self.lang = master.current_language
         
@@ -86,7 +86,22 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         self.session_id = session_id
         self.header_metrics = header_metrics
         self.report_data = report_data
-        self.graph_data = graph_data
+
+        if isinstance(graph_data_payload, dict):
+            self.graph_data_payload = graph_data_payload
+            self.graph_data = graph_data_payload.get("grid", [])
+        else:
+            # Fallback
+            self.graph_data_payload = {"grid": graph_data_payload, "scenario": graph_data_payload}
+            self.graph_data = graph_data_payload
+        
+        # --- BIND TO MASTER PERSISTENT VARS ---
+        # This was likely missing, causing the crash
+        self.show_trend_var = master.graph_show_trend_var
+        self.show_flow_var = master.graph_show_flow_var
+        self.show_pulse_var = master.graph_show_pulse_var
+        self.flow_window_var = master.graph_flow_window_var
+        # --------------------------------------
         
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.bind("<F5>", self.request_refresh)
@@ -139,10 +154,15 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         if hasattr(self.app_master, 'trigger_report_refresh'):
             self.app_master.trigger_report_refresh(self, self.session_id)
 
-    def update_content(self, header_metrics, report_data, session_date_str, graph_data):
+    def update_content(self, header_metrics, report_data, session_date_str, graph_data_payload):
         self.header_metrics = header_metrics
         self.report_data = report_data
-        self.graph_data = graph_data
+        
+        # Store the full payload
+        self.graph_data_payload = graph_data_payload
+        # Default to grid data for safety until redraw
+        self.graph_data = graph_data_payload.get("grid", [])
+        
         self.title(locales.get_text(self.lang, "rep_title", date=session_date_str))
         self._draw_header_metrics()
         self._redraw_report()
@@ -185,18 +205,56 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         content = self._create_collapsible_section(parent, locales.get_text(self.lang, "rep_graph_title"))
         content.pack(fill="x", expand=True)
         
+        # --- CONTROLS ---
+        controls = customtkinter.CTkFrame(content, fg_color="transparent")
+        controls.pack(fill="x", pady=(0,5))
+        
+        customtkinter.CTkCheckBox(controls, text="Show Session Trend", variable=self.show_trend_var, command=self._redraw_and_save, checkbox_height=18, checkbox_width=18, font=("Arial", 11)).pack(side="left", padx=10)
+        
+        # Flow + Window Input
+        flow_frame = customtkinter.CTkFrame(controls, fg_color="transparent")
+        flow_frame.pack(side="left", padx=10)
+        customtkinter.CTkCheckBox(flow_frame, text="Show Global Flow (N=)", variable=self.show_flow_var, command=self._redraw_and_save, checkbox_height=18, checkbox_width=18, font=("Arial", 11)).pack(side="left")
+        
+        # Small entry for Window
+        w_entry = customtkinter.CTkEntry(flow_frame, textvariable=self.flow_window_var, width=30, height=20, font=("Arial", 11))
+        w_entry.pack(side="left", padx=(2,0))
+        
+        # Auto-Refresh Trace (Only add once)
+        if not hasattr(self, 'flow_trace_added'):
+            self.flow_window_var.trace_add("write", self._schedule_refresh)
+            self.flow_trace_added = True
+        
+        customtkinter.CTkCheckBox(controls, text="Show The Pulse", variable=self.show_pulse_var, command=self._redraw_and_save, checkbox_height=18, checkbox_width=18, font=("Arial", 11)).pack(side="left", padx=10)
+        # ------------------------------
+        
         times = [d['time'] for d in self.graph_data]
         pcts = [d['pct'] for d in self.graph_data]
+        trend_pcts = [d['trend_pct'] for d in self.graph_data]
+        flow_pcts = [d['flow_pct'] for d in self.graph_data]
+        pulse_pcts = [d['pulse_pct'] for d in self.graph_data]
         
         plt.style.use('dark_background' if customtkinter.get_appearance_mode() == "Dark" else 'seaborn-v0_8-whitegrid')
         fig = Figure(figsize=(8, 6.5), dpi=100) 
         ax = fig.add_subplot(111)
         
-        line, = ax.plot(times, pcts, color='#4aa3df', marker='o', markersize=3, linestyle='-', linewidth=1.5, alpha=0.8, picker=5)
+        # Plot Lines based on Toggle
+        if self.show_trend_var.get():
+            ax.plot(times, trend_pcts, color='#FF9800', linestyle='-', linewidth=2, alpha=0.8, label="Session Trend")
+        
+        if self.show_flow_var.get():
+            ax.plot(times, flow_pcts, color='#9C27B0', linestyle='-', linewidth=2, alpha=0.9, label="Global Flow")
+
+        if self.show_pulse_var.get():
+            ax.plot(times, pulse_pcts, color='#00E5FF', linestyle='-', linewidth=1.5, alpha=0.9, label="Pulse")
+
+        line, = ax.plot(times, pcts, color='#4aa3df', marker='o', markersize=3, linestyle='-', linewidth=1.0, alpha=0.7, picker=5, label="Score")
         
         ax.axhline(0, color='gray', linestyle='--', linewidth=1, alpha=0.5) 
         ax.fill_between(times, pcts, 0, where=(np.array(pcts) >= 0), color='green', alpha=0.15, interpolate=True)
         ax.fill_between(times, pcts, 0, where=(np.array(pcts) < 0), color='red', alpha=0.15, interpolate=True)
+
+        ax.legend(loc='upper left', fontsize='small', framealpha=0.5)
 
         annot = ax.annotate("", xy=(0,0), xytext=(10,10), textcoords="offset points",
                             bbox=dict(boxstyle="round", fc="#242424", ec="white", alpha=0.9),
@@ -209,7 +267,6 @@ class SessionReportWindow(customtkinter.CTkToplevel):
             pos = line.get_xydata()[idx]
             annot.xy = pos
             data_point = self.graph_data[idx]
-            # Localize Tooltip
             sens_txt = f"{data_point['sens']}cm"
             text = f"{data_point['scenario']}\n{sens_txt}\n{data_point['pct']:.1f}%"
             annot.set_text(text)
@@ -303,14 +360,23 @@ class SessionReportWindow(customtkinter.CTkToplevel):
     def _redraw_report(self):
         for widget in self.scroll_frame.winfo_children(): widget.destroy()
         
+        view_mode = "scenario" if self.summary_toggle_var.get() == "On" else "grid"
+        
+        # --- SWITCH GRAPH DATA ---
+        if hasattr(self, 'graph_data_payload'):
+            self.graph_data = self.graph_data_payload.get(view_mode, [])
+        # -------------------------
+        
         self._draw_performance_graph()
 
-        view_mode = "scenario" if self.summary_toggle_var.get() == "On" else "grid"
         sort_mode = self.sort_var.get()
         data = self.report_data[view_mode]
-        self.total_plays_var.set(str(self.header_metrics[f'total_plays_{view_mode}']))
-        self.total_pbs_var.set(str(len(data['pbs'])))
         
+        self.total_plays_var.set(str(self.header_metrics['total_plays_grid']))
+        pb_count = self.header_metrics.get(f'total_pbs_{view_mode}', len(data['pbs']))
+        self.total_pbs_var.set(str(pb_count))
+        
+        # ... (rest of sorting and populating logic unchanged) ...
         sort_key_map = {"play_count": "play_count", "time": "first_played", "alpha": "name"}
         reverse_sort_map = {"performance": True, "play_count": True, "time": False, "alpha": False}
         
@@ -318,9 +384,77 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         data['averages'].sort(key=lambda x: x['perf_vs_avg'] if sort_mode == 'performance' else x[sort_key_map[sort_mode]], reverse=reverse_sort_map.get(sort_mode, False))
         data['pbs'].sort(key=lambda x: x['improvement_pct'] if sort_mode == 'performance' else x[sort_key_map[sort_mode]], reverse=reverse_sort_map.get(sort_mode, False))
         
-        self._populate_played_section(data['played'])
+        if 'rank_counts' in self.report_data:
+            self._populate_ranks_section(
+                self.report_data['rank_counts'], 
+                self.report_data.get('rank_gate_val', 1),
+                self.report_data.get('rank_defs', [])
+            )
+            
         self._populate_pbs_section(data['pbs'])
         self._populate_averages_section(data['averages'])
+        self._populate_played_section(data['played'])
+
+    def _populate_ranks_section(self, rank_counts, gate_val=1, rank_defs=None):
+        if rank_counts.get("TRANSMUTE", 0) == 0: return
+
+        parent = customtkinter.CTkFrame(self.scroll_frame, fg_color="transparent"); parent.pack(fill="x")
+        # Note: loc_key "sec_ranks" needs to be added to locales.py
+        title = locales.get_text(self.lang, "sec_ranks", val="Rank Achieved") 
+        content = self._create_collapsible_section(parent, title)
+        
+        # --- DYNAMIC EXPLANATION TEXT ---
+        if rank_defs:
+            # Sort lowest to highest for reading left-to-right
+            # rank_defs is usually [("SINGULARITY", 100)...], so we reverse it
+            sorted_defs = sorted(rank_defs, key=lambda x: x[1])
+            
+            # Build string like: "Transmute: 55% | Blessed: 75% | ..."
+            parts = []
+            for name, val in sorted_defs:
+                if name == "SINGULARITY": continue # Skip 100/PB for threshold text usually? Or show it?
+                # User asked for thresholds, usually Singularity implies PB/100, let's include all except maybe PB if redundant
+                # Let's include it as "Singularity: 100%" or "PB"
+                parts.append(f"{name.capitalize()}: {val}%")
+            
+            threshold_text = "  •  ".join(parts)
+            
+            # Combine with Gate info
+            full_info_text = threshold_text
+            if gate_val > 1:
+                full_info_text += f"   |   *Uber+ requires {gate_val} runs"
+            
+            info_lbl = customtkinter.CTkLabel(content, text=full_info_text, font=customtkinter.CTkFont(size=11), text_color="gray")
+            info_lbl.pack(anchor="w", padx=10, pady=(0, 5))
+        # ------------------------------
+        
+        content_grid = customtkinter.CTkFrame(content, fg_color="transparent")
+        content_grid.pack(fill="x")
+        content_grid.grid_columnconfigure((0,1,2,3,4,5), weight=1, uniform="rank_group")
+        
+        rank_order = ["TRANSMUTE", "BLESSED", "EXALTED", "UBER", "ARCADIA", "SINGULARITY"]
+        
+        rank_styles = {
+            "TRANSMUTE":   ("#448AFF", "black"), 
+            "BLESSED":     ("#FF5252", "black"), 
+            "EXALTED":     ("#FDD835", "black"), 
+            "UBER":        ("#673AB7", "white"), 
+            "ARCADIA":     ("#2E7D32", "white"), 
+            "SINGULARITY": ("#000000", "white")  
+        }
+        
+        for i, rank_name in enumerate(rank_order):
+            count = rank_counts.get(rank_name, 0)
+            bg_col, txt_col = rank_styles.get(rank_name, ("gray", "white"))
+            
+            frame = customtkinter.CTkFrame(content_grid, fg_color=bg_col)
+            frame.grid(row=0, column=i, padx=5, pady=5, sticky="ew")
+            
+            lbl_name = customtkinter.CTkLabel(frame, text=rank_name, font=customtkinter.CTkFont(size=10, weight="bold"), text_color=txt_col)
+            lbl_name.pack(pady=(5,0))
+            
+            lbl_count = customtkinter.CTkLabel(frame, text=str(count), font=customtkinter.CTkFont(size=18, weight="bold"), text_color=txt_col)
+            lbl_count.pack(pady=(0,5))
 
     def _populate_played_section(self, played_data):
         parent = customtkinter.CTkFrame(self.scroll_frame, fg_color="transparent"); parent.pack(fill="x")
@@ -385,6 +519,15 @@ class SessionReportWindow(customtkinter.CTkToplevel):
             customtkinter.CTkLabel(stats_frame, text=all_time_text, anchor="center").grid(row=0, column=1, sticky="ew")
             customtkinter.CTkLabel(stats_frame, text=perf_str, font=customtkinter.CTkFont(weight="bold"), text_color=perf_color, anchor="e").grid(row=0, column=2, sticky="ew", padx=5)
 
+    def _redraw_and_save(self, event=None):
+        self.app_master.save_user_data()
+        self._redraw_report()
+
+    def _schedule_refresh(self, *args):
+        if hasattr(self, '_refresh_job') and self._refresh_job:
+            self.after_cancel(self._refresh_job)
+        self._refresh_job = self.after(800, self.request_refresh)
+
 class GraphWindow(customtkinter.CTkToplevel):
     def __init__(self, master, full_data, hide_settings, save_callback, graph_id, title):
         super().__init__(master)
@@ -399,6 +542,24 @@ class GraphWindow(customtkinter.CTkToplevel):
         self.save_callback = save_callback
         self.graph_id = graph_id
         self.title_text = title
+        
+        # --- BIND TO MASTER PERSISTENT VARS ---
+        self.show_trend_var = master.graph_grid_show_trend_var
+        
+        # SMA 1 (Purple)
+        self.show_sma_var = master.graph_grid_show_sma_var
+        self.sma_window_var = master.graph_grid_sma_window_var
+        
+        # SMA 2 (Cyan)
+        self.show_sma2_var = master.graph_grid_show_sma2_var
+        self.sma2_window_var = master.graph_grid_sma2_window_var
+        
+        # Auto-Refresh Traces
+        if not hasattr(self, 'sma_trace_added'):
+            self.sma_window_var.trace_add("write", self._schedule_refresh)
+            self.sma2_window_var.trace_add("write", self._schedule_refresh)
+            self.sma_trace_added = True
+        # --------------------------------------
         
         self.view_key_map = {"Raw Data": "raw", "Daily Average": "daily", "Weekly Average": "weekly", "Monthly Average": "monthly", "Session Average": "session"}
 
@@ -423,10 +584,8 @@ class GraphWindow(customtkinter.CTkToplevel):
                                                             values=["Line Plot", "Dots Only", "Filled Area"],
                                                             command=self._on_graph_option_change)
         
-        # Localized Refresh Button
         customtkinter.CTkButton(top_control_frame, text=locales.get_text(self.lang, "rep_refresh"), width=90, command=self.request_refresh).pack(side="right", padx=10, pady=5)
         
-        # Localized
         customtkinter.CTkLabel(bottom_control_frame, text=locales.get_text(self.lang, "graph_hide_low")).pack(side="left", padx=(10,5), pady=5)
         self.hide_below_var = customtkinter.StringVar()
         hide_below_entry = customtkinter.CTkEntry(bottom_control_frame, textvariable=self.hide_below_var, width=80)
@@ -434,25 +593,46 @@ class GraphWindow(customtkinter.CTkToplevel):
         hide_below_entry.bind("<Return>", self.update_hide_below)
         
         self.connect_sessions_var = customtkinter.StringVar(value=self.hide_settings.get("connect_sessions", "Off"))
-        # Localized Text
         self.connect_sessions_switch = customtkinter.CTkSwitch(bottom_control_frame, text=locales.get_text(self.lang, "graph_connect"), variable=self.connect_sessions_var, onvalue="On", offvalue="Off", command=self._on_graph_option_change)
         
         self.four_color_cycle_var = customtkinter.StringVar(value=self.hide_settings.get("four_color_cycle", "Off"))
-        # Localized Text
         self.four_color_cycle_switch = customtkinter.CTkSwitch(bottom_control_frame, text=locales.get_text(self.lang, "graph_4color"), variable=self.four_color_cycle_var, onvalue="On", offvalue="Off", command=self._on_graph_option_change)
+        
+        # --- Trend Controls ---
+        trend_frame = customtkinter.CTkFrame(bottom_control_frame, fg_color="transparent")
+        trend_frame.pack(side="right", padx=10)
+        
+        def toggle_trend(): 
+            self.app_master.save_user_data()
+            self.redraw_plot()
+
+        customtkinter.CTkCheckBox(trend_frame, text="Career Trend", variable=self.show_trend_var, command=toggle_trend, checkbox_height=18, checkbox_width=18, font=("Arial", 11)).pack(side="left", padx=5)
+        
+        # SMA 1
+        sma_frame = customtkinter.CTkFrame(trend_frame, fg_color="transparent")
+        sma_frame.pack(side="left", padx=5)
+        customtkinter.CTkCheckBox(sma_frame, text="SMA (N=)", variable=self.show_sma_var, command=toggle_trend, checkbox_height=18, checkbox_width=18, font=("Arial", 11)).pack(side="left")
+        sma_entry = customtkinter.CTkEntry(sma_frame, textvariable=self.sma_window_var, width=30, height=20, font=("Arial", 11))
+        sma_entry.pack(side="left", padx=(2,0))
+        
+        # SMA 2
+        sma2_frame = customtkinter.CTkFrame(trend_frame, fg_color="transparent")
+        sma2_frame.pack(side="left", padx=5)
+        customtkinter.CTkCheckBox(sma2_frame, text="SMA (N=)", variable=self.show_sma2_var, command=toggle_trend, checkbox_height=18, checkbox_width=18, font=("Arial", 11)).pack(side="left")
+        sma2_entry = customtkinter.CTkEntry(sma2_frame, textvariable=self.sma2_window_var, width=30, height=20, font=("Arial", 11))
+        sma2_entry.pack(side="left", padx=(2,0))
+        # ---------------------
         
         self.plot_frame = customtkinter.CTkFrame(self); self.plot_frame.pack(fill="both", expand=True, padx=10, pady=10)
         self.fig, self.canvas, self.toolbar = None, None, None
-        self.on_view_mode_change() 
+        self.on_view_mode_change()
 
     def on_close(self):
         self.app_master.deregister_graph_window(self)
         self.destroy()
 
-    # --- RESTORED: The missing refresh method ---
     def request_refresh(self, event=None):
         self.app_master.load_stats_thread()
-    # --------------------------------------------
 
     def update_data(self, new_full_data):
         # Called by App to refresh stats
@@ -570,16 +750,45 @@ class GraphWindow(customtkinter.CTkToplevel):
                 plot_y = pd.concat([pd.Series([last_point[1]]), plot_y], ignore_index=True)
 
             if display_mode == "Line Plot":
-                ax.plot(plot_x, plot_y, color=color, alpha=0.7)
+                ax.plot(plot_x, plot_y, color=color, alpha=0.7, zorder=2)
                 ax.scatter(group.index, group['Score'], color=color, s=20, zorder=3)
             elif display_mode == "Dots Only":
                 ax.scatter(group.index, group['Score'], color=color, s=20, zorder=3)
             elif display_mode == "Filled Area":
-                ax.plot(plot_x, plot_y, color=color, alpha=0.8)
-                ax.fill_between(plot_x, plot_y, color=color, alpha=0.3)
+                ax.plot(plot_x, plot_y, color=color, alpha=0.8, zorder=2)
+                ax.fill_between(plot_x, plot_y, color=color, alpha=0.3, zorder=1)
                 ax.scatter(group.index, group['Score'], color=color, s=20, zorder=3)
             
             last_point = (group.index[-1], group['Score'].iloc[-1])
+
+        # --- TREND LINES (Draw ON TOP) ---
+        
+        # 1. Career Trend (Orange)
+        if self.show_trend_var.get():
+            cumulative_avg = plot_data['Score'].expanding().mean()
+            ax.plot(plot_data.index, cumulative_avg, color='#FF9800', linestyle='-', linewidth=2.5, alpha=0.95, label="Career Trend", zorder=5)
+
+        # 2. SMA 1 (White)
+        if self.show_sma_var.get():
+            try:
+                w = int(self.sma_window_var.get())
+                if w < 1: w = 20
+            except ValueError: w = 20
+            
+            sma = plot_data['Score'].rolling(window=w).mean()
+            ax.plot(plot_data.index, sma, color='white', linestyle='-', linewidth=2.5, alpha=0.95, label=f"SMA ({w})", zorder=5)
+
+        # 3. SMA 2 (Cyan)
+        if self.show_sma2_var.get():
+            try:
+                w2 = int(self.sma2_window_var.get())
+                if w2 < 1: w2 = 10
+            except ValueError: w2 = 10
+            
+            sma2 = plot_data['Score'].rolling(window=w2).mean()
+            ax.plot(plot_data.index, sma2, color='#00E5FF', linestyle='-', linewidth=2.5, alpha=0.95, label=f"SMA ({w2})", zorder=5)
+        
+        # ---------------------------------
 
         min_score, max_score = plot_data['Score'].min(), plot_data['Score'].max()
         padding = (max_score - min_score) * 0.05 if max_score > min_score else 10
@@ -644,3 +853,213 @@ class GraphWindow(customtkinter.CTkToplevel):
         if period == 'W': return 5
         if period == 'M': return 20
         return 1
+    
+    def _schedule_refresh(self, *args):
+        if hasattr(self, '_refresh_job') and self._refresh_job:
+            self.after_cancel(self._refresh_job)
+        self._refresh_job = self.after(800, lambda: (self.save_callback(), self.redraw_plot()))
+
+class CareerProfileWindow(customtkinter.CTkToplevel):
+    def __init__(self, master, all_runs_df):
+        super().__init__(master)
+        self.lang = master.current_language
+        self.title("Career Profile")
+        self.geometry("800x850")
+        self.transient(master)
+        
+        self.df = all_runs_df
+        
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        
+        self.header_frame = customtkinter.CTkFrame(self, fg_color=("gray85", "gray20"))
+        self.header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        
+        self.scroll_frame = customtkinter.CTkScrollableFrame(self)
+        self.scroll_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.scroll_frame.grid_columnconfigure(0, weight=1)
+        
+        # 1. Calculate All Time Stats
+        self.all_time_stats = engine.calculate_profile_stats(self.df)
+        
+        # 2. Draw Top Section (All Time)
+        self._draw_stats_block(self.header_frame, self.all_time_stats, title="All Time Career")
+        
+        # 3. Draw Monthly Archives
+        self._draw_monthly_archives()
+
+
+
+    def format_timedelta_hours(self, seconds):
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"{hours}h {minutes}m"
+
+    def _draw_stats_block(self, parent, stats, title):
+        if not stats: return
+
+        # Title + Career Start
+        title_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        title_frame.pack(pady=(10, 5))
+        customtkinter.CTkLabel(title_frame, text=title, font=customtkinter.CTkFont(size=18, weight="bold")).pack(side="left")
+        
+        if title == "All Time Career":
+            start_date = self.df['Timestamp'].min().strftime('%B %d, %Y')
+            customtkinter.CTkLabel(title_frame, text=f"(Started: {start_date})", font=customtkinter.CTkFont(size=12), text_color="gray").pack(side="left", padx=10)
+        
+        # Grid for metrics
+        metrics_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        metrics_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Adjusted columns to 5 to fit the extra PB stat comfortably
+        metrics_frame.grid_columnconfigure((0,1,2,3,4), weight=1)
+        
+        def add_metric(r, c, label, value):
+            f = customtkinter.CTkFrame(metrics_frame, fg_color=("gray80", "gray25"))
+            f.grid(row=r, column=c, padx=5, pady=5, sticky="ew")
+            customtkinter.CTkLabel(f, text=label, font=customtkinter.CTkFont(size=11)).pack(pady=(5,0))
+            customtkinter.CTkLabel(f, text=str(value), font=customtkinter.CTkFont(size=15, weight="bold")).pack(pady=(0,5))
+            
+        add_metric(0, 0, "Total Runs", f"{stats['total_runs']:,}")
+        
+        # Split PBs
+        add_metric(0, 1, "Total PBs", f"{stats['total_pbs_scen']:,}")
+        add_metric(0, 2, "Total PBs /cm", f"{stats['total_pbs_combo']:,}")
+        
+        # Time Stats
+        add_metric(0, 3, "Active Playtime", f"{self.format_timedelta_hours(stats['active_playtime'])}")
+        
+        comp_rate = (stats['active_playtime'] / stats['total_session_time'] * 100) if stats['total_session_time'] > 0 else 0
+        add_metric(0, 4, "Efficiency", f"{comp_rate:.1f}%")
+        
+        # Row 2 (Centered 3 items)
+        # We can put them in columns 1, 2, 3 to center visually if we use 5 cols
+        add_metric(1, 1, "Unique Scenarios", stats['unique_scenarios'])
+        add_metric(1, 2, "Unique Combos", stats['unique_combos'])
+        add_metric(1, 3, "Most Active Day", stats['most_active_day'])
+        
+        # Ranks Section
+        self._draw_ranks(parent, stats['rank_counts'], stats['rank_defs'])
+        
+        # Top Scenarios
+        self._draw_top_scenarios(parent, stats['top_scenarios'])
+
+    def _draw_ranks(self, parent, rank_counts, rank_defs):
+        f = customtkinter.CTkFrame(parent, fg_color="transparent")
+        f.pack(fill="x", padx=10, pady=5)
+        f.grid_columnconfigure((0,1,2,3,4,5), weight=1, uniform="rank_group_prof")
+        
+        # Use defs for order (lowest to highest? No, let's keep visual consistency)
+        # Visual: Transmute -> Singularity
+        rank_order = ["TRANSMUTE", "BLESSED", "EXALTED", "UBER", "ARCADIA", "SINGULARITY"]
+        rank_styles = {
+            "TRANSMUTE":   ("#448AFF", "black"), 
+            "BLESSED":     ("#FF5252", "black"), 
+            "EXALTED":     ("#FDD835", "black"), 
+            "UBER":        ("#673AB7", "white"), 
+            "ARCADIA":     ("#2E7D32", "white"), 
+            "SINGULARITY": ("#000000", "white")  
+        }
+        
+        for i, r_name in enumerate(rank_order):
+            count = rank_counts.get(r_name, 0)
+            bg, txt = rank_styles.get(r_name, ("gray", "white"))
+            
+            if count == 0: bg = ("gray90", "gray30"); txt = "gray"
+            
+            cell = customtkinter.CTkFrame(f, fg_color=bg)
+            cell.grid(row=0, column=i, padx=2, pady=2, sticky="ew")
+            # Full Name
+            customtkinter.CTkLabel(cell, text=r_name, font=customtkinter.CTkFont(size=12, weight="bold"), text_color=txt).pack(pady=2)
+            customtkinter.CTkLabel(cell, text=f"{count}", font=customtkinter.CTkFont(size=12), text_color=txt).pack(pady=(0,2))
+
+    def _draw_top_scenarios(self, parent, top_dict):
+        if not top_dict: return
+        f = customtkinter.CTkFrame(parent, fg_color="transparent")
+        f.pack(fill="x", padx=10, pady=(5,10))
+        
+        btn = customtkinter.CTkButton(f, text="Show Top 10 Scenarios ▶", fg_color="transparent", text_color=("black", "white"), height=20)
+        btn.pack(anchor="w")
+        
+        content = customtkinter.CTkFrame(f)
+        
+        def toggle():
+            if content.winfo_viewable(): content.pack_forget(); btn.configure(text="Show Top 10 Scenarios ▶")
+            else: content.pack(fill="x", pady=5); btn.configure(text="Hide Top 10 Scenarios ▼")
+        btn.configure(command=toggle)
+        
+        for i, (name, count) in enumerate(top_dict.items()):
+            row = customtkinter.CTkFrame(content, fg_color="transparent")
+            row.pack(fill="x", padx=5, pady=1)
+            customtkinter.CTkLabel(row, text=f"{i+1}. {name}", anchor="w").pack(side="left")
+            customtkinter.CTkLabel(row, text=f"{count}", anchor="e", font=customtkinter.CTkFont(weight="bold")).pack(side="right")
+
+    def _draw_monthly_archives(self):
+        df_mod = self.df.copy()
+        df_mod['Month'] = df_mod['Timestamp'].dt.to_period('M')
+        
+        months = sorted(df_mod['Month'].unique(), reverse=True)
+        
+        customtkinter.CTkLabel(self.scroll_frame, text="Monthly Archives", font=customtkinter.CTkFont(size=16, weight="bold")).pack(pady=10)
+        
+        for m in months:
+            month_str = m.strftime("%B %Y")
+            month_df = df_mod[df_mod['Month'] == m]
+            
+            # Pre-calculate stats for the label
+            stats = engine.calculate_profile_stats(month_df)
+            
+            # Construct summary label
+            # Exalted Ratio = (Exalted / Total Runs) * 100
+            # Note: "Exalted" count in enriched data is CUMULATIVE (includes Uber, etc)
+            exalted_count = stats['rank_counts'].get('EXALTED', 0)
+            exalted_ratio = (exalted_count / stats['total_runs'] * 100) if stats['total_runs'] > 0 else 0
+            
+            # Localize hours
+            time_str = self.format_timedelta_hours(stats['active_playtime'])
+            
+            summary_text = f"Runs: {stats['total_runs']}  |  Time: {time_str}  |  Exalted+: {exalted_ratio:.1f}%"
+            
+            container = customtkinter.CTkFrame(self.scroll_frame)
+            container.pack(fill="x", pady=2)
+            
+            content_frame = customtkinter.CTkFrame(container, fg_color="transparent")
+            
+            def toggle(c=content_frame, s=stats, b_wid=None):
+                if c.winfo_viewable():
+                    c.pack_forget()
+                else:
+                    c.pack(fill="x", padx=5, pady=5)
+                    # We already have stats, just draw
+                    if not c.winfo_children():
+                        self._draw_stats_block(c, s, title="")
+            
+            # Custom Button layout to include summary text on right
+            # Standard CTkButton text alignment is limited. 
+            # Better to use a Frame with two labels acting as a button.
+            
+            btn_frame = customtkinter.CTkFrame(container, fg_color=("gray75", "gray30"), corner_radius=6)
+            btn_frame.pack(fill="x", ipady=5)
+            
+            # Bind click events
+            btn_frame.bind("<Button-1>", lambda e, c=content_frame, s=stats: toggle(c, s))
+            
+            lbl_left = customtkinter.CTkLabel(btn_frame, text=month_str, font=customtkinter.CTkFont(size=14, weight="bold"))
+            lbl_left.pack(side="left", padx=10)
+            lbl_left.bind("<Button-1>", lambda e, c=content_frame, s=stats: toggle(c, s))
+            
+            lbl_right = customtkinter.CTkLabel(btn_frame, text=summary_text, font=customtkinter.CTkFont(size=12), text_color="gray20")
+            # Fix text color for dark mode manually or let it be auto
+            if customtkinter.get_appearance_mode() == "Dark": lbl_right.configure(text_color="gray80")
+            
+            lbl_right.pack(side="right", padx=10)
+            lbl_right.bind("<Button-1>", lambda e, c=content_frame, s=stats: toggle(c, s))
+            
+            # Hover effects
+            def on_enter(e, f=btn_frame): f.configure(fg_color=("gray65", "gray40"))
+            def on_leave(e, f=btn_frame): f.configure(fg_color=("gray75", "gray30"))
+            btn_frame.bind("<Enter>", on_enter)
+            btn_frame.bind("<Leave>", on_leave)
+            # Propagate hover to labels
+            lbl_left.bind("<Enter>", on_enter); lbl_left.bind("<Leave>", on_leave)
+            lbl_right.bind("<Enter>", on_enter); lbl_right.bind("<Leave>", on_leave)

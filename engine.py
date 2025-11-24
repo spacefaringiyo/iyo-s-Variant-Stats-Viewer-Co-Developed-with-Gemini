@@ -4,11 +4,13 @@ from pathlib import Path
 import re
 import json
 from datetime import datetime, timedelta
+import bisect
+import numpy as np
+from collections import defaultdict
 
 APP_DATA_DIR = Path.home() / '.kovaaks_stats_viewer'
 APP_DATA_DIR.mkdir(exist_ok=True) 
 
-# --- CHANGED: Extension to .pkl ---
 CACHE_HISTORY_PATH = APP_DATA_DIR / 'kovaaks_history_cache.pkl'
 CACHE_INFO_PATH = APP_DATA_DIR / 'kovaaks_cache_info.json'
 
@@ -80,7 +82,6 @@ def find_and_process_stats(stats_folder_path, session_gap_minutes=30):
     if os.path.exists(CACHE_HISTORY_PATH) and os.path.exists(CACHE_INFO_PATH):
         try:
             print("---- Loading data from cache ----")
-            # --- CHANGED: read_pickle ---
             cached_history_df = pd.read_pickle(CACHE_HISTORY_PATH)
             if 'Timestamp' in cached_history_df.columns:
                  cached_history_df['Timestamp'] = pd.to_datetime(cached_history_df['Timestamp'])
@@ -117,7 +118,6 @@ def find_and_process_stats(stats_folder_path, session_gap_minutes=30):
     combined_history_df = _detect_and_assign_sessions(combined_history_df, session_gap_minutes)
 
     try:
-        # --- CHANGED: to_pickle ---
         combined_history_df.to_pickle(CACHE_HISTORY_PATH)
         with open(CACHE_INFO_PATH, 'w') as f: json.dump(current_files_info, f, indent=2)
         print("---- Caches updated successfully ----")
@@ -188,6 +188,180 @@ def get_scenario_family_info(all_runs_df, base_scenario):
     family_df['Modifiers'] = family_df['Scenario'].apply(parse_modifiers)
     return family_df
 
+# --- NEW: Helper for enriched analysis ---
+# --- NEW: Helper for enriched analysis ---
+# --- NEW: Helper for enriched analysis ---
+def enrich_history_with_stats(df):
+    """
+    Calculates PBs and Ranks for every run in the dataframe contextually.
+    Updates:
+    - Is_PB / Is_PB_Scenario: Only True if improving on PREVIOUS history (First run != PB).
+    - Ranks: First run counts as Singularity (Baseline is Peak).
+    """
+    if df is None or df.empty: return df
+    
+    # Work on a sorted copy
+    df = df.sort_values('Timestamp').copy()
+    
+    rank_definitions = [
+        ("SINGULARITY", 100),
+        ("ARCADIA", 95),
+        ("UBER", 90),
+        ("EXALTED", 82),
+        ("BLESSED", 75),
+        ("TRANSMUTE", 55)
+    ]
+    gated_ranks = {"SINGULARITY", "ARCADIA", "UBER"}
+    min_runs_for_gate = 10
+    
+    # Initialize columns
+    df['Is_PB'] = False # Combo PB
+    df['Is_PB_Scenario'] = False # Global Scenario PB
+    
+    for r_name, _ in rank_definitions:
+        df[f'Rank_{r_name}'] = 0 
+
+    # --- PASS 1: Scenario Global PBs ---
+    scen_groups = df.groupby('Scenario')
+    updates_scen = []
+    
+    for _, group in scen_groups:
+        scores = group['Score'].values
+        indices = group.index.values
+        
+        current_max = -float('inf')
+        
+        for i, score in enumerate(scores):
+            # STRICTER LOGIC: First run (i==0) is NOT a PB stat.
+            # Only count as PB if it improves on previous max.
+            is_improvement = (i > 0 and score >= current_max)
+            
+            if is_improvement:
+                updates_scen.append(indices[i])
+            
+            # Update max AFTER checking
+            if score > current_max: current_max = score
+            # Note: For first run, current_max becomes score.
+    
+    if updates_scen:
+        df.loc[updates_scen, 'Is_PB_Scenario'] = True
+
+    # --- PASS 2: Combo PBs + Ranks ---
+    combo_groups = df.groupby(['Scenario', 'Sens'])
+    updates = []
+    
+    for _, group in combo_groups:
+        scores = group['Score'].values
+        indices = group.index.values
+        
+        history = []
+        
+        for i, score in enumerate(scores):
+            idx = indices[i]
+            current_run_count = i + 1
+            
+            row_updates = {}
+            
+            # Determine Status
+            if not history:
+                # First Run
+                is_pb_stat = False # Baseline is not an improvement
+                is_singularity_rank = True # But it is the peak of current history (100th percentile)
+            else:
+                current_pb = history[-1]
+                is_pb_stat = score >= current_pb
+                is_singularity_rank = score >= current_pb
+            
+            if is_pb_stat:
+                row_updates['Is_PB'] = True 
+                
+            # Rank Logic
+            if is_singularity_rank:
+                for rank_name, _ in rank_definitions:
+                    if current_run_count < min_runs_for_gate and rank_name in gated_ranks: continue
+                    row_updates[f'Rank_{rank_name}'] = 1
+            else:
+                pos = bisect.bisect_left(history, score)
+                percentile = (pos / len(history)) * 100
+                
+                for rank_name, threshold in rank_definitions:
+                    if rank_name == "SINGULARITY": continue
+                    if current_run_count < min_runs_for_gate and rank_name in gated_ranks: continue
+                    
+                    if percentile >= threshold:
+                        row_updates[f'Rank_{rank_name}'] = 1
+
+            # Update history
+            bisect.insort(history, score)
+            updates.append((idx, row_updates))
+            
+    # Apply updates
+    rows = []
+    for idx, ups in updates:
+        ups['index'] = idx
+        rows.append(ups)
+    
+    if rows:
+        updates_df = pd.DataFrame(rows).set_index('index')
+        df.update(updates_df)
+    
+    return df
+
+def calculate_profile_stats(enriched_df):
+    """
+    Summarizes stats from an ALREADY ENRICHED dataframe slice.
+    """
+    if enriched_df is None or enriched_df.empty: return None
+
+    stats = {}
+    stats['total_runs'] = len(enriched_df)
+    stats['active_playtime'] = enriched_df['Duration'].sum()
+    
+    # Total Session Duration (approximate for the slice)
+    if 'SessionID' in enriched_df.columns:
+        sess = enriched_df.groupby('SessionID')['Timestamp'].agg(['min', 'max'])
+        stats['total_session_time'] = (sess['max'] - sess['min']).sum().total_seconds()
+    else:
+        stats['total_session_time'] = stats['active_playtime']
+
+    # Unique Scenarios
+    stats['unique_scenarios'] = enriched_df['Scenario'].nunique()
+    stats['unique_combos'] = enriched_df.groupby(['Scenario', 'Sens']).ngroups
+    
+    # Top 10 Scenarios
+    top_scenarios = enriched_df['Scenario'].value_counts().head(10)
+    stats['top_scenarios'] = top_scenarios.to_dict() 
+    
+    # Totals from enriched columns
+    stats['total_pbs_combo'] = int(enriched_df['Is_PB'].sum())
+    stats['total_pbs_scen'] = int(enriched_df['Is_PB_Scenario'].sum())
+    
+    rank_definitions = [
+        ("SINGULARITY", 100),
+        ("ARCADIA", 95),
+        ("UBER", 90),
+        ("EXALTED", 82),
+        ("BLESSED", 75),
+        ("TRANSMUTE", 55)
+    ]
+    
+    rank_counts = {}
+    for r_name, _ in rank_definitions:
+        col = f'Rank_{r_name}'
+        if col in enriched_df.columns:
+            rank_counts[r_name] = int(enriched_df[col].sum())
+        else:
+            rank_counts[r_name] = 0
+            
+    stats['rank_counts'] = rank_counts
+    stats['rank_defs'] = rank_definitions
+    
+    # Extra Info: Most Active Day
+    day_counts = enriched_df['Timestamp'].dt.day_name().value_counts()
+    stats['most_active_day'] = day_counts.idxmax() if not day_counts.empty else "N/A"
+    
+    return stats
+
 def calculate_detailed_stats(runs_df):
     config = {
         'min_runs_for_foundational': 2,
@@ -250,38 +424,38 @@ def calculate_detailed_stats(runs_df):
                 stats['launchpad_avg'] = pre_pb_window['Score'].mean()
                 stats['launchpad_std'] = pre_pb_window['Score'].std() if len(pre_pb_window) > 1 else 0
 
-    if len(runs_df) >= config['min_runs_for_oracle_message'] and 'recent_avg' in stats:
-        recent_avg = stats['recent_avg']
+    ## if len(runs_df) >= config['min_runs_for_oracle_message'] and 'recent_avg' in stats:
+    #    recent_avg = stats['recent_avg']
         
-        trend_signal = None
-        if 'p75' in stats and recent_avg > stats['p75']:
-            trend_signal = "Improving"
-        elif 'p50' in stats and recent_avg > stats['p50']:
-            trend_signal = "Plateau"
-        elif 'p50' in stats:
-            trend_signal = "Slump"
+    #    trend_signal = None
+    #    if 'p75' in stats and recent_avg > stats['p75']:
+    #        trend_signal = "Improving"
+    #   elif 'p50' in stats and recent_avg > stats['p50']:
+    #        trend_signal = "Plateau"
+    #    elif 'p50' in stats:
+    #       trend_signal = "Slump"
+    #
+    #    peak_signal = None
+    #    if 'launchpad_avg' in stats and recent_avg >= (stats['launchpad_avg'] * 0.98):
+    #        peak_signal = "Matching"
 
-        peak_signal = None
-        if 'launchpad_avg' in stats and recent_avg >= (stats['launchpad_avg'] * 0.98):
-            peak_signal = "Matching"
+    #    verdict = None
+    #    if trend_signal == "Improving" and peak_signal == "Matching":
+    #        verdict = "Peaking!"
+    #   elif trend_signal == "Plateau" and peak_signal == "Matching":
+     #       verdict = "On a stable peak."
+    #    elif trend_signal == "Slump" and peak_signal == "Matching":
+      #      verdict = "New higher floor."
+    #    elif peak_signal == "Matching":
+      #       verdict = "Matching peak conditions."
+    #    elif trend_signal == "Improving":
+      #      verdict = "Improving."
+    #    elif trend_signal == "Plateau":
+      #      verdict = "On a plateau."
+    #    elif trend_signal == "Slump":
+       #     verdict = "In a slump."
 
-        verdict = None
-        if trend_signal == "Improving" and peak_signal == "Matching":
-            verdict = "Peaking!"
-        elif trend_signal == "Plateau" and peak_signal == "Matching":
-            verdict = "On a stable peak."
-        elif trend_signal == "Slump" and peak_signal == "Matching":
-            verdict = "New higher floor."
-        elif peak_signal == "Matching":
-             verdict = "Matching peak conditions."
-        elif trend_signal == "Improving":
-            verdict = "Improving."
-        elif trend_signal == "Plateau":
-            verdict = "On a plateau."
-        elif trend_signal == "Slump":
-            verdict = "In a slump."
-
-        if verdict:
-            stats['oracle'] = verdict
+     #   if verdict:
+      #      stats['oracle'] = verdict
     
     return stats

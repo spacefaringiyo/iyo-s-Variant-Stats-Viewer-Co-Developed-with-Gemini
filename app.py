@@ -1,3 +1,4 @@
+import bisect
 import customtkinter
 import tkinter
 from tkinter import filedialog
@@ -12,6 +13,8 @@ import json
 import numpy as np
 from datetime import timedelta
 from pathlib import Path
+import windows
+import engine
 
 import windows
 import utils
@@ -49,12 +52,32 @@ class App(customtkinter.CTk):
         self.appearance_mode_var = customtkinter.StringVar(value="System")
         self.font_size_var = customtkinter.StringVar(value="12")
         
-        # --- NEW: Language Variable ---
         self.language_var = customtkinter.StringVar(value="en") 
-        self.current_language = "en" # Helper for faster lookup
-        # ------------------------------
+        self.current_language = "en"
 
         self.target_score_var = customtkinter.StringVar(value="3000")
+        
+        self.percentile_var = customtkinter.StringVar(value="75")
+        self.recent_success_days_var = customtkinter.StringVar(value="14")
+        
+        # --- SESSION GRAPH SETTINGS ---
+        self.graph_show_trend_var = customtkinter.BooleanVar(value=True)
+        self.graph_show_flow_var = customtkinter.BooleanVar(value=True)
+        self.graph_show_pulse_var = customtkinter.BooleanVar(value=False)
+        self.graph_flow_window_var = customtkinter.StringVar(value="5")
+
+        # --- GRID GRAPH SETTINGS ---
+        self.graph_grid_show_trend_var = customtkinter.BooleanVar(value=False)
+        
+        # SMA 1 (Purple)
+        self.graph_grid_show_sma_var = customtkinter.BooleanVar(value=False)
+        self.graph_grid_sma_window_var = customtkinter.StringVar(value="20")
+        
+        # SMA 2 (Cyan) - NEW
+        self.graph_grid_show_sma2_var = customtkinter.BooleanVar(value=False)
+        self.graph_grid_sma2_window_var = customtkinter.StringVar(value="10")
+        # ---------------------------
+
         self.session_gap_minutes_var = customtkinter.StringVar(value="30")
         
         self.pb_rank_var = customtkinter.StringVar(value="1")
@@ -83,7 +106,6 @@ class App(customtkinter.CTk):
         self.load_user_data()
         customtkinter.set_appearance_mode(self.appearance_mode_var.get())
         
-        # Set Title using Locale
         self.title(locales.get_text(self.current_language, "window_title"))
         
         if hasattr(self, 'saved_geometry') and self.saved_geometry:
@@ -106,12 +128,21 @@ class App(customtkinter.CTk):
         self.bottom_frame.grid_columnconfigure(0, weight=1)
         self.bottom_frame.grid_rowconfigure(1, weight=1)
         
-        self.rating_frame = customtkinter.CTkFrame(self.bottom_frame)
+        self.rating_frame = customtkinter.CTkFrame(self.bottom_frame, height=50)
         self.rating_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 5))
-        self.rating_frame.grid_columnconfigure(0, weight=1)
-        # Localized Rating Placeholder
+        
+        # Prevent frame from shrinking to fit just the small hint text
+        self.rating_frame.grid_propagate(False) 
+
+        # 1. Rating Label: Absolute Center
         self.rating_label = customtkinter.CTkLabel(self.rating_frame, text=locales.get_text(self.current_language, "rating", val="-"), font=("Arial", 24, "bold"))
-        self.rating_label.grid(row=0, column=0, pady=10)
+        self.rating_label.place(relx=0.5, rely=0.5, anchor="center")
+        
+        # 2. Hint Text: Right Aligned
+        self.hint_label = customtkinter.CTkLabel(self.rating_frame, text=locales.get_text(self.current_language, "hint_hide"), text_color="gray")
+        # Use pack or place for the hint. Place is safer here to avoid conflict with grid_propagate(False).
+        self.hint_label.place(relx=1.0, rely=0.5, anchor="e", x=-20) # x=-20 provides the padding
+        
         self.rating_frame.grid_remove()
         
         self._build_path_and_load_controls()
@@ -125,11 +156,9 @@ class App(customtkinter.CTk):
                 self.saved_geometry = data.get("window_geometry")
                 self.appearance_mode_var.set(data.get("appearance_mode", "System"))
                 
-                # --- NEW: Load Language ---
                 lang = data.get("language_preference", "en")
                 self.language_var.set(lang)
                 self.current_language = lang
-                # --------------------------
 
                 self.favorites = [{"name": fav, "axis": ""} if isinstance(fav, str) else fav for fav in data.get("favorites", [])]
                 self.recents = [{"name": rec, "axis": ""} if isinstance(rec, str) else rec for rec in data.get("recents", [])]
@@ -153,6 +182,24 @@ class App(customtkinter.CTk):
                 self.session_report_geometry = data.get("session_report_geometry", "900x800")
                 
                 self.last_custom_rank = data.get("last_custom_rank", 3)
+                
+                self.percentile_var.set(str(data.get("percentile_preference", "75")))
+                self.recent_success_days_var.set(str(data.get("recent_success_days", "14")))
+                
+                # --- SESSION GRAPH SETTINGS ---
+                self.graph_show_trend_var.set(data.get("graph_show_trend", True))
+                self.graph_show_flow_var.set(data.get("graph_show_flow", True))
+                self.graph_show_pulse_var.set(data.get("graph_show_pulse", False))
+                self.graph_flow_window_var.set(str(data.get("graph_flow_window", "5")))
+                
+                # --- GRID GRAPH SETTINGS ---
+                self.graph_grid_show_trend_var.set(data.get("graph_grid_show_trend", False))
+                
+                self.graph_grid_show_sma_var.set(data.get("graph_grid_show_sma", False))
+                self.graph_grid_sma_window_var.set(str(data.get("graph_grid_sma_window", "20")))
+                
+                self.graph_grid_show_sma2_var.set(data.get("graph_grid_show_sma2", False))
+                self.graph_grid_sma2_window_var.set(str(data.get("graph_grid_sma2_window", "10")))
 
                 self.collapsed_states['main_controls'] = False
             except (json.JSONDecodeError, AttributeError): 
@@ -187,9 +234,7 @@ class App(customtkinter.CTk):
         data_to_save = {
             "window_geometry": self.geometry(),
             "appearance_mode": self.appearance_mode_var.get(),
-            # --- NEW: Save Language ---
             "language_preference": self.language_var.get(),
-            # --------------------------
             "favorites": self.favorites, "recents": self.recents, 
             "sens_settings_by_scenario": self.sens_settings_by_scenario,
             "grid_display_mode_preference": self.grid_display_mode_var.get(),
@@ -203,6 +248,21 @@ class App(customtkinter.CTk):
             "graph_hide_settings": self.graph_hide_settings,
             "session_report_geometry": self.session_report_geometry,
             "last_custom_rank": self.last_custom_rank,
+            "percentile_preference": self.percentile_var.get(),
+            "recent_success_days": self.recent_success_days_var.get(),
+            
+            # --- SESSION GRAPH SETTINGS ---
+            "graph_show_trend": self.graph_show_trend_var.get(),
+            "graph_show_flow": self.graph_show_flow_var.get(),
+            "graph_show_pulse": self.graph_show_pulse_var.get(),
+            "graph_flow_window": self.graph_flow_window_var.get(),
+            
+            # --- GRID GRAPH SETTINGS ---
+            "graph_grid_show_trend": self.graph_grid_show_trend_var.get(),
+            "graph_grid_show_sma": self.graph_grid_show_sma_var.get(),
+            "graph_grid_sma_window": self.graph_grid_sma_window_var.get(),
+            "graph_grid_show_sma2": self.graph_grid_show_sma2_var.get(),
+            "graph_grid_sma2_window": self.graph_grid_sma2_window_var.get(),
         }
         with open(USER_DATA_FILE, 'w') as f: json.dump(data_to_save, f, indent=2)
 
@@ -273,23 +333,39 @@ class App(customtkinter.CTk):
         self.select_path_button = customtkinter.CTkButton(self.path_frame, text=locales.get_text(self.current_language, "select_folder_btn"), command=self.select_stats_folder); self.select_path_button.grid(row=0, column=0, padx=(0,10), pady=10)
         self.path_entry = customtkinter.CTkEntry(self.path_frame, placeholder_text="Path to KovaaK's stats folder..."); self.path_entry.grid(row=0, column=1, sticky="ew", pady=10)
         
+        # Action Frame (Load Button + Report Buttons)
         action_frame = customtkinter.CTkFrame(self.path_frame, fg_color="transparent"); action_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0,10)); action_frame.grid_columnconfigure(0, weight=1)
-        # Localized
+        
+        # 1. Load Button (Expands to fill left space)
         self.load_button = customtkinter.CTkButton(action_frame, text=locales.get_text(self.current_language, "load_btn"), font=("Arial", 18, "bold"), height=50, command=self.load_stats_thread); self.load_button.grid(row=0, column=0, sticky="ew")
         
+        # 2. Report Buttons Frame (Right side)
         report_buttons_frame = customtkinter.CTkFrame(action_frame, fg_color="transparent")
-        report_buttons_frame.grid(row=0, column=1, padx=(10,0))
-        # Localized
-        self.session_report_button = customtkinter.CTkButton(report_buttons_frame, text=locales.get_text(self.current_language, "session_report_btn"), command=self.open_session_report, state="disabled")
-        self.session_report_button.pack(fill="x", pady=(0,2))
-        # Localized
-        self.session_history_button = customtkinter.CTkButton(report_buttons_frame, text=locales.get_text(self.current_language, "session_hist_btn"), command=self.open_session_history, state="disabled")
-        self.session_history_button.pack(fill="x", pady=(2,0))
+        report_buttons_frame.grid(row=0, column=1, padx=(10,0), sticky="ns")
         
+        # Button Config: Height=50 to match Load Button, Width=140 for text space
+        btn_h, btn_w = 50, 140
+        
+        # A. Career Profile
+        self.profile_button = customtkinter.CTkButton(report_buttons_frame, text="Career Profile", command=self.open_career_profile, state="disabled", fg_color="#673AB7", hover_color="#512DA8", height=btn_h, width=btn_w)
+        self.profile_button.grid(row=0, column=0, padx=(0, 5))
+        
+        # B. Session History
+        self.session_history_button = customtkinter.CTkButton(report_buttons_frame, text=locales.get_text(self.current_language, "session_hist_btn"), command=self.open_session_history, state="disabled", height=btn_h, width=btn_w)
+        self.session_history_button.grid(row=0, column=1, padx=(0, 5))
+
+        # C. Last Session Report
+        self.session_report_button = customtkinter.CTkButton(report_buttons_frame, text=locales.get_text(self.current_language, "session_report_btn"), command=self.open_session_report, state="disabled", height=btn_h, width=btn_w)
+        self.session_report_button.grid(row=0, column=2)
+        
+        # Status Bar
         status_frame = customtkinter.CTkFrame(self.path_frame, fg_color="transparent"); status_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
-        # Localized
         self.status_label = customtkinter.CTkLabel(status_frame, text=locales.get_text(self.current_language, "ready_label"), anchor="w"); self.status_label.pack(side="left", padx=(0,10))
         self.progress_bar = customtkinter.CTkProgressBar(self.path_frame, mode='indeterminate')
+
+    def open_career_profile(self):
+        if self.all_runs_df is None: return
+        windows.CareerProfileWindow(self, self.all_runs_df)
 
     def _build_main_ui_controls(self):
         self.main_controls_header, self.main_controls_content = self._create_collapsible_section("Options & Analysis", "main_controls", 1); self.main_controls_content.grid_columnconfigure(0, weight=1)
@@ -302,7 +378,6 @@ class App(customtkinter.CTk):
         user_lists_frame = customtkinter.CTkFrame(selection_content_frame); user_lists_frame.grid(row=1, column=0, sticky="ew")
         user_lists_frame.grid_columnconfigure((0, 1, 2), weight=1)
         
-        # Localized
         self.scenario_entry_label = customtkinter.CTkLabel(search_frame, text=locales.get_text(self.current_language, "search_label")); self.scenario_entry_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(5,0))
         self.scenario_search_var = customtkinter.StringVar(); self.scenario_search_var.trace_add("write", self.update_autocomplete)
         
@@ -317,91 +392,88 @@ class App(customtkinter.CTk):
         self.recently_played_frame = customtkinter.CTkScrollableFrame(user_lists_frame); self.recently_played_frame.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
         self.update_user_lists_display()
         
-        display_top_row_frame = customtkinter.CTkFrame(self.main_controls_content); display_top_row_frame.grid(row=1, column=0, sticky="ew"); 
-        display_top_row_frame.grid_columnconfigure((0, 1), weight=1, uniform="group1")
+        # --- UNIFIED SETTINGS AREA ---
+        display_top_row_frame = customtkinter.CTkFrame(self.main_controls_content)
+        display_top_row_frame.grid(row=1, column=0, sticky="ew", pady=5)
         
-        session_group = customtkinter.CTkFrame(display_top_row_frame); session_group.grid(row=0, column=0, padx=(0, 5), pady=5, sticky="ew")
-        # Localized
-        customtkinter.CTkLabel(session_group, text=locales.get_text(self.current_language, "session_gap")).pack(side="left", padx=(10, 5));
-        customtkinter.CTkEntry(session_group, textvariable=self.session_gap_minutes_var, width=50).pack(side="left")
-        # Localized
-        customtkinter.CTkLabel(session_group, text=locales.get_text(self.current_language, "req_refresh"), font=customtkinter.CTkFont(size=10, slant="italic")).pack(side="left", padx=(5,10));
+        # 1. Language Group (Left, Prominent)
+        lang_frame = customtkinter.CTkFrame(display_top_row_frame, fg_color="transparent")
+        lang_frame.pack(side="left", padx=10, pady=5)
         
-        misc_group = customtkinter.CTkFrame(display_top_row_frame); misc_group.grid(row=0, column=1, padx=(5,0), pady=5, sticky="ew")
-        misc_group.grid_columnconfigure(0, weight=1)
-        top_misc_frame = customtkinter.CTkFrame(misc_group, fg_color="transparent")
-        top_misc_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
-        theme_frame = customtkinter.CTkFrame(top_misc_frame, fg_color="transparent")
-        theme_frame.pack(side="left", padx=(0,10))
-        # Localized
-        customtkinter.CTkLabel(theme_frame, text=locales.get_text(self.current_language, "theme")).pack(side="left", padx=(0,5))
-        customtkinter.CTkOptionMenu(theme_frame, variable=self.appearance_mode_var, values=["System", "Dark", "Light"], command=self.on_appearance_mode_change, width=90).pack(side="left")
+        # Big Emoji + Text Label
+        customtkinter.CTkLabel(lang_frame, text="🌐 Language/言語", font=("Arial", 14, "bold")).pack(side="left", padx=(0,10))
         
-        # --- NEW: Language Dropdown ---
-        lang_frame = customtkinter.CTkFrame(top_misc_frame, fg_color="transparent")
-        lang_frame.pack(side="left", padx=(5,10))
-        customtkinter.CTkLabel(lang_frame, text=locales.get_text(self.current_language, "lang_label")).pack(side="left", padx=(0,5))
-        self.lang_map = {"English": "en", "日本語 (JP)": "jp", "Português (PT)": "pt", "简体中文 (CN)": "cn"}
+        self.lang_map = {
+            "English": "en", 
+            "Español (ES)": "es",
+            "Português (PT)": "pt",
+            "日本語 (JP)": "jp", 
+            "한국어 (KO)": "ko",
+            "简体中文 (CN)": "cn",
+            "한국어 (KO)": "ko",
+            "Русский (RU)": "ru",
+            "Українська (UA)": "ua"
+        }
         self.lang_display_list = list(self.lang_map.keys())
-        
-        # 2. Helper to find current display name from code
         current_disp = next((k for k, v in self.lang_map.items() if v == self.language_var.get()), "English")
         self.lang_display_var = customtkinter.StringVar(value=current_disp)
+        
+        # Dropdown
+        customtkinter.CTkOptionMenu(lang_frame, variable=self.lang_display_var, values=self.lang_display_list, command=self.on_language_change, width=130, height=32).pack(side="left")
 
-        # 3. Update Dropdown to use display names
-        customtkinter.CTkOptionMenu(
-            lang_frame, 
-            variable=self.lang_display_var, 
-            values=self.lang_display_list, 
-            command=self.on_language_change, # This needs update too
-            width=110 # Increased width
-        ).pack(side="left")
-        # ------------------------------
+        # Separator Line (Visual)
+        sep = customtkinter.CTkFrame(display_top_row_frame, width=2, height=40, fg_color=("gray70", "gray30"))
+        sep.pack(side="left", padx=5)
 
-        # Localized
-        customtkinter.CTkSwitch(top_misc_frame, text=locales.get_text(self.current_language, "show_decimals"), variable=self.show_decimals_var, onvalue="On", offvalue="Off", command=self.on_display_option_change).pack(side="left", padx=(10,0))
-        # Localized
-        customtkinter.CTkButton(top_misc_frame, text=locales.get_text(self.current_language, "manage_hidden"), command=self.open_manage_hidden_window).pack(side="right")
-        bottom_misc_frame = customtkinter.CTkFrame(misc_group, fg_color="transparent")
-        bottom_misc_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0,5))
-        # Localized
-        customtkinter.CTkLabel(bottom_misc_frame, text=locales.get_text(self.current_language, "font_size")).pack(side="left")
-        font_size_entry = customtkinter.CTkEntry(bottom_misc_frame, textvariable=self.font_size_var, width=40)
+        # 2. Main Settings Group (Right)
+        settings_group = customtkinter.CTkFrame(display_top_row_frame, fg_color="transparent")
+        settings_group.pack(side="left", fill="both", expand=True, padx=5)
+        
+        # Row A: Theme | Session Gap | Decimals | Hidden
+        row_a = customtkinter.CTkFrame(settings_group, fg_color="transparent")
+        row_a.pack(fill="x", pady=2)
+        
+        # Theme
+        customtkinter.CTkLabel(row_a, text=locales.get_text(self.current_language, "theme")).pack(side="left", padx=(0,5))
+        customtkinter.CTkOptionMenu(row_a, variable=self.appearance_mode_var, values=["System", "Dark", "Light"], command=self.on_appearance_mode_change, width=90).pack(side="left")
+        
+        # Session Gap
+        customtkinter.CTkLabel(row_a, text=locales.get_text(self.current_language, "session_gap")).pack(side="left", padx=(15, 5));
+        customtkinter.CTkEntry(row_a, textvariable=self.session_gap_minutes_var, width=40).pack(side="left")
+        customtkinter.CTkLabel(row_a, text=locales.get_text(self.current_language, "req_refresh"), font=customtkinter.CTkFont(size=10, slant="italic"), text_color="gray").pack(side="left", padx=(2,0));
+
+        # Decimals
+        customtkinter.CTkSwitch(row_a, text=locales.get_text(self.current_language, "show_decimals"), variable=self.show_decimals_var, onvalue="On", offvalue="Off", command=self.on_display_option_change).pack(side="left", padx=(15,0))
+        
+        # Manage Hidden (Right align, taller)
+        customtkinter.CTkButton(row_a, text=locales.get_text(self.current_language, "manage_hidden"), command=self.open_manage_hidden_window, height=32).pack(side="right", padx=5, anchor="center")
+
+        # Row B: Font | Cell Height
+        row_b = customtkinter.CTkFrame(settings_group, fg_color="transparent")
+        row_b.pack(fill="x", pady=2)
+        
+        customtkinter.CTkLabel(row_b, text=locales.get_text(self.current_language, "font_size")).pack(side="left")
+        font_size_entry = customtkinter.CTkEntry(row_b, textvariable=self.font_size_var, width=40)
         font_size_entry.pack(side="left", padx=(0,10))
-        # Localized
-        customtkinter.CTkLabel(bottom_misc_frame, text=locales.get_text(self.current_language, "cell_h")).pack(side="left")
-        cell_height_entry = customtkinter.CTkEntry(bottom_misc_frame, textvariable=self.cell_height_var, width=40)
+        customtkinter.CTkLabel(row_b, text=locales.get_text(self.current_language, "cell_h")).pack(side="left")
+        cell_height_entry = customtkinter.CTkEntry(row_b, textvariable=self.cell_height_var, width=40)
         cell_height_entry.pack(side="left")
         font_size_entry.bind("<Return>", self.on_display_option_change)
         cell_height_entry.bind("<Return>", self.on_display_option_change)
+        # -----------------------------------
 
         self.filters_frame = customtkinter.CTkFrame(self.main_controls_content); self.filters_frame.grid(row=2, column=0, sticky="ew", pady=(5,0)); self.format_filter_frame = customtkinter.CTkFrame(self.main_controls_content); self.format_filter_frame.grid(row=3, column=0, sticky="ew", pady=(0,5))
         
         analysis_modes_frame = customtkinter.CTkFrame(self.top_frame)
         analysis_modes_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(5,5))
-        analysis_modes_frame.grid_columnconfigure((0, 1, 2), weight=1) 
+        analysis_modes_frame.grid_columnconfigure(0, weight=1)
 
-        self.top_frame.grid_rowconfigure(4, weight=1)
+        analysis_row1 = customtkinter.CTkFrame(analysis_modes_frame, fg_color="transparent")
+        analysis_row1.grid(row=0, column=0, sticky="ew")
 
-        sens_filter_group = customtkinter.CTkFrame(analysis_modes_frame)
-        sens_filter_group.grid(row=0, column=0, sticky="ew", padx=(0,5))
-        # Localized
+        sens_filter_group = customtkinter.CTkFrame(analysis_row1)
+        sens_filter_group.pack(side="left", padx=(0,5), fill="both")
         customtkinter.CTkLabel(sens_filter_group, text=locales.get_text(self.current_language, "sens_filter")).pack(side="left", padx=(10,5), pady=5)
-        # Localized Options (Needs a mapper if values are logic tokens vs display tokens)
-        # Current code uses English tokens for logic ("All", "5cm Inc."). 
-        # To support full localization, OptionMenu needs display_values different from values.
-        # CTk doesn't support that natively easily. 
-        # SHORTCUT: We will just localize the Label, but keep Dropdown values in English/International for now to avoid breaking logic.
-        # OR: We map them. Let's map them for display, but logic uses them?
-        # Actually, let's just translate the list passed to 'values'. Logic in `display_grid_data` needs to map back.
-        # To keep it simple for this step, I am LOCALIZING THE VALUES list.
-        # We will need a helper in `display_grid_data` to map "全て" -> "All".
-        
-        # For v1.21 stability, I will keep the Dropdown Values in English/Numeric (international enough)
-        # but localize the Labels surrounding them.
-        # "All", "5cm Inc" is fairly understandable.
-        # If you want strict translation of dropdown items, we need a reverse-lookup map.
-        # Let's stick to English values for Dropdowns to ensure logic stability for now.
         
         self.sens_filter_menu = customtkinter.CTkOptionMenu(sens_filter_group, variable=self.sens_filter_mode_var, values=["All", "2cm Step", "3cm Step", "5cm Step", "10cm Step", "Custom Step", "Specific List"], width=110, command=self.on_display_option_change)
         self.sens_filter_menu.pack(side="left", padx=5, pady=5)
@@ -410,48 +482,67 @@ class App(customtkinter.CTk):
         self.sens_specific_list_entry = customtkinter.CTkEntry(sens_filter_group, textvariable=self.sens_specific_list_var, width=120, placeholder_text="34.6, 43.3...")
         self.sens_specific_list_entry.bind("<Return>", self.on_display_option_change)
 
-        grid_mode_frame = customtkinter.CTkFrame(analysis_modes_frame); grid_mode_frame.grid(row=0, column=1, sticky="ew", padx=5)
-        # Localized
+        grid_mode_frame = customtkinter.CTkFrame(analysis_row1); 
+        grid_mode_frame.pack(side="left", padx=5, fill="both", expand=True)
         customtkinter.CTkLabel(grid_mode_frame, text=locales.get_text(self.current_language, "grid_mode")).pack(side="left", padx=(10,5), pady=5)
         
         self.pb_rank_frame = customtkinter.CTkFrame(grid_mode_frame, fg_color="transparent")
         self.pb_rank_frame.pack(side="left", padx=(0, 5))
-        # Localized
         customtkinter.CTkLabel(self.pb_rank_frame, text=locales.get_text(self.current_language, "pb_num")).pack(side="left", padx=(0,2))
-        
         self.rank_toggle_btn = customtkinter.CTkButton(self.pb_rank_frame, text="1⇄N", width=40, height=20, fg_color=("gray70", "gray30"), command=self.toggle_pb_rank)
         self.rank_toggle_btn.pack(side="left", padx=3)
-
-        btn_minus = customtkinter.CTkButton(self.pb_rank_frame, text="-", width=20, height=20, command=lambda: self.change_pb_rank(-1))
-        btn_minus.pack(side="left", padx=2)
-        entry_rank = customtkinter.CTkEntry(self.pb_rank_frame, textvariable=self.pb_rank_var, width=30, height=20)
-        entry_rank.pack(side="left", padx=2)
+        btn_minus = customtkinter.CTkButton(self.pb_rank_frame, text="-", width=20, height=20, command=lambda: self.change_pb_rank(-1)); btn_minus.pack(side="left", padx=2)
+        entry_rank = customtkinter.CTkEntry(self.pb_rank_frame, textvariable=self.pb_rank_var, width=30, height=20); entry_rank.pack(side="left", padx=2)
         entry_rank.bind("<Return>", lambda e: self.on_display_option_change())
-        btn_plus = customtkinter.CTkButton(self.pb_rank_frame, text="+", width=20, height=20, command=lambda: self.change_pb_rank(1))
-        btn_plus.pack(side="left", padx=2)
+        btn_plus = customtkinter.CTkButton(self.pb_rank_frame, text="+", width=20, height=20, command=lambda: self.change_pb_rank(1)); btn_plus.pack(side="left", padx=2)
 
         modes = [("Personal Best", "mode_pb"), ("Average Score", "mode_avg"), ("Play Count", "mode_count")]
         for mode_val, loc_key in modes:
             text = locales.get_text(self.current_language, loc_key)
             customtkinter.CTkRadioButton(grid_mode_frame, text=text, variable=self.grid_display_mode_var, value=mode_val, command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
         
-        highlight_group = customtkinter.CTkFrame(analysis_modes_frame); highlight_group.grid(row=0, column=2, sticky="ew", padx=(5,0))
-        # Localized
+        self.perc_frame = customtkinter.CTkFrame(grid_mode_frame, fg_color="transparent")
+        self.perc_frame.pack(side="left", padx=5)
+        
+        p_text = locales.get_text(self.current_language, "mode_percentile", val="Nth Percentile") 
+        customtkinter.CTkRadioButton(self.perc_frame, text=p_text, variable=self.grid_display_mode_var, value="Nth Percentile", command=self.on_display_option_change).pack(side="left")
+        
+        self.percentile_entry = customtkinter.CTkEntry(self.perc_frame, textvariable=self.percentile_var, width=40)
+        self.percentile_var.trace_add("write", self._schedule_refresh)
+
+        highlight_group = customtkinter.CTkFrame(analysis_modes_frame); highlight_group.grid(row=1, column=0, sticky="ew", pady=(5,0))
         customtkinter.CTkLabel(highlight_group, text=locales.get_text(self.current_language, "highlight")).pack(side="left", padx=(10,5), pady=5)
+        
+        hl_container = customtkinter.CTkFrame(highlight_group, fg_color="transparent")
+        hl_container.pack(side="left", fill="both", expand=True)
         
         h_modes = [
             ("None", "hl_none"),
             ("Performance Drop", "hl_drop"),
             ("Row Heatmap", "hl_row_heat"),
-            ("Global Heatmap", "hl_global_heat"),
-            ("Target Score", "hl_target")
+            ("Global Heatmap", "hl_global_heat")
         ]
         for val, loc_key in h_modes:
             text = locales.get_text(self.current_language, loc_key)
-            customtkinter.CTkRadioButton(highlight_group, text=text, variable=self.highlight_mode_var, value=val, command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
+            customtkinter.CTkRadioButton(hl_container, text=text, variable=self.highlight_mode_var, value=val, command=self.on_display_option_change).pack(side="left", padx=5, pady=5)
         
-        self.target_score_entry = customtkinter.CTkEntry(highlight_group, textvariable=self.target_score_var, width=80); self.target_score_entry.pack(side="left", padx=(0,10), pady=5); self.target_score_entry.bind("<Return>", self.on_display_option_change)
+        self.ts_frame = customtkinter.CTkFrame(hl_container, fg_color="transparent")
+        self.ts_frame.pack(side="left", padx=5)
         
+        ts_text = locales.get_text(self.current_language, "hl_target")
+        customtkinter.CTkRadioButton(self.ts_frame, text=ts_text, variable=self.highlight_mode_var, value="Target Score", command=self.on_display_option_change).pack(side="left")
+        self.target_score_entry = customtkinter.CTkEntry(self.ts_frame, textvariable=self.target_score_var, width=80)
+        self.target_score_var.trace_add("write", self._schedule_refresh)
+
+        self.rs_frame = customtkinter.CTkFrame(hl_container, fg_color="transparent")
+        self.rs_frame.pack(side="left", padx=5)
+        
+        rs_text = locales.get_text(self.current_language, "hl_recent_success", val="Recent Success")
+        customtkinter.CTkRadioButton(self.rs_frame, text=rs_text, variable=self.highlight_mode_var, value="Recent Success", command=self.on_display_option_change).pack(side="left")
+        self.recent_days_entry = customtkinter.CTkEntry(self.rs_frame, textvariable=self.recent_success_days_var, width=40)
+        self.recent_success_days_var.trace_add("write", self._schedule_refresh)
+        
+        self.top_frame.grid_rowconfigure(4, weight=1)
         self._apply_initial_collapse_state(); self.on_display_option_change()
 
     def clear_search(self):
@@ -513,16 +604,24 @@ class App(customtkinter.CTk):
         if not hasattr(self, 'main_controls_content'): self._build_main_ui_controls()
         
         if all_runs_df is not None and not all_runs_df.empty and 'Duration' in all_runs_df.columns:
-            self.all_runs_df = all_runs_df
+            # --- ENRICH DATA ---
+            self.status_label.configure(text="Calculating Rank History (One-time)...")
+            self.update_idletasks() # Force UI update so user sees message
+            self.all_runs_df = engine.enrich_history_with_stats(all_runs_df)
+            # -------------------
+            
             unique_scenarios = self.all_runs_df['Scenario'].unique()
             self.scenario_list = sorted(list(unique_scenarios))
             self.update_user_lists_display()
             # Localized
             self.status_label.configure(text=locales.get_text(self.current_language, "loaded_label", count=len(self.all_runs_df)))
             self.scenario_entry.configure(state="normal")
+            
+            # Enable buttons
             self.session_report_button.configure(state="normal")
             self.session_history_button.configure(state="normal")
-            # Localized
+            self.profile_button.configure(state="normal")
+            
             self.load_button.configure(text=locales.get_text(self.current_language, "refresh_btn"))
             if self.is_first_load:
                 self.is_first_load = False 
@@ -551,7 +650,6 @@ class App(customtkinter.CTk):
                         if sens_str != "ALL":
                             df = df[df['Sens'] == float(sens_str)]
                         df.sort_values(by='Timestamp', inplace=True)
-                        df['unique_id'] = df.apply(lambda row: f"{row['Timestamp'].isoformat()}|{row['Score']}", axis=1)
                         window.update_data(df)
                     except Exception as e:
                         print(f"Error updating graph window {window.title_text}: {e}")
@@ -560,12 +658,12 @@ class App(customtkinter.CTk):
 
             if callback: callback()
         else:
-            # Localized
             if all_runs_df is None: self.status_label.configure(text=locales.get_text(self.current_language, "load_err_label"))
             else: self.status_label.configure(text="Data loaded, but is missing 'Duration'. Please Refresh Stats (F5).")
             self.all_runs_df, self.scenario_list = None, []
             self.session_report_button.configure(state="disabled")
             self.session_history_button.configure(state="disabled")
+            self.profile_button.configure(state="disabled")
         self.load_button.configure(state="normal"); self.select_path_button.configure(state="normal")
 
     def _create_collapsible_section(self, title, section_key, row_index):
@@ -595,9 +693,24 @@ class App(customtkinter.CTk):
         self.destroy()
         
     def on_display_option_change(self, event=None):
-        if hasattr(self, 'target_score_entry'):
-            if self.highlight_mode_var.get() == "Target Score": self.target_score_entry.pack(side="left", padx=(0,10), pady=5)
-            else: self.target_score_entry.pack_forget()
+        # Percentile
+        if self.grid_display_mode_var.get() == "Nth Percentile":
+            self.percentile_entry.pack(side="left", padx=(5,0))
+        else:
+            self.percentile_entry.pack_forget()
+
+        # Target Score
+        if self.highlight_mode_var.get() == "Target Score":
+            self.target_score_entry.pack(side="left", padx=(5,0))
+        else:
+            self.target_score_entry.pack_forget()
+
+        # Recent Success
+        if self.highlight_mode_var.get() == "Recent Success":
+            self.recent_days_entry.pack(side="left", padx=(5,0))
+        else:
+            self.recent_days_entry.pack_forget()
+
         self.save_user_data(); self.display_grid_data()
 
     def on_appearance_mode_change(self, new_mode):
@@ -727,6 +840,7 @@ class App(customtkinter.CTk):
 
         display_mode = self.grid_display_mode_var.get()
         
+        # UI: Manage Rank/PB visibility
         if display_mode == "Personal Best":
             children = self.pb_rank_frame.master.winfo_children()
             if children: self.pb_rank_frame.pack(side="left", padx=(0, 5), after=children[0])
@@ -734,33 +848,55 @@ class App(customtkinter.CTk):
         else:
             self.pb_rank_frame.pack_forget()
 
-        target_rank = 1
+        # Data Preparation
+        display_data_source = summary_data
+        
         if display_mode == "Personal Best":
             try: target_rank = int(self.pb_rank_var.get())
             except ValueError: target_rank = 1
+            if target_rank > 1 and self.current_filtered_runs is not None:
+                def get_nth_score(group):
+                    if len(group) < target_rank: return np.nan
+                    return group.nlargest(target_rank).iloc[-1]
+                nth_scores = self.current_filtered_runs.groupby(['Scenario', 'Sens'])['Score'].apply(get_nth_score).reset_index()
+                nth_scores.rename(columns={'Score': 'PB_Score'}, inplace=True)
+                display_data_source = nth_scores
         
-        if display_mode == "Personal Best" and target_rank > 1 and self.current_filtered_runs is not None:
-            def get_nth_score(group):
-                if len(group) < target_rank: return np.nan
-                return group.nlargest(target_rank).iloc[-1]
-            nth_scores = self.current_filtered_runs.groupby(['Scenario', 'Sens'])['Score'].apply(get_nth_score).reset_index()
-            nth_scores.rename(columns={'Score': 'PB_Score'}, inplace=True)
-            display_data_source = nth_scores
-        else:
-            display_data_source = summary_data
+        # --- NEW: Percentile Calculation ---
+        elif display_mode == "Nth Percentile" and self.current_filtered_runs is not None:
+            try: 
+                p_val = float(self.percentile_var.get())
+                p_val = max(0, min(100, p_val)) / 100.0
+            except ValueError: p_val = 0.75
+            
+            def get_perc(group): return group.quantile(p_val)
+            perc_scores = self.current_filtered_runs.groupby(['Scenario', 'Sens'])['Score'].apply(get_perc).reset_index()
+            perc_scores.rename(columns={'Score': 'Percentile_Score'}, inplace=True)
+            display_data_source = perc_scores
+        # -----------------------------------
 
-        value_map = {"Personal Best": "PB_Score", "Average Score": "Avg_Score", "Play Count": "Play_Count"}
-        display_value_col = value_map[display_mode]
-        highlight_value_col = "Avg_Score" if display_mode == "Average Score" else "PB_Score"
+        value_map = {
+            "Personal Best": "PB_Score", 
+            "Average Score": "Avg_Score", 
+            "Play Count": "Play_Count",
+            "Nth Percentile": "Percentile_Score" # Mapped new mode
+        }
+        display_value_col = value_map.get(display_mode, "PB_Score")
 
+        # Pivot tables
         display_df = display_data_source.pivot_table(index='Scenario', columns='Sens', values=display_value_col).fillna(np.nan)
         
+        # highlight_df logic: For "Recent Success", it should contain the target scores (what is currently displayed)
         if display_mode == "Personal Best" and target_rank > 1:
              highlight_df = display_data_source.pivot_table(index='Scenario', columns='Sens', values='PB_Score').fillna(np.nan)
-        else:
-             highlight_df = summary_data.pivot_table(index='Scenario', columns='Sens', values=highlight_value_col).fillna(np.nan)
+        elif display_mode == "Nth Percentile":
+             highlight_df = display_data_source.pivot_table(index='Scenario', columns='Sens', values='Percentile_Score').fillna(np.nan)
+        elif display_mode == "Average Score":
+             highlight_df = summary_data.pivot_table(index='Scenario', columns='Sens', values='Avg_Score').fillna(np.nan)
+        else: # PB or Count
+             highlight_df = summary_data.pivot_table(index='Scenario', columns='Sens', values='PB_Score').fillna(np.nan)
 
-        stats_source_df = display_data_source.pivot_table(index='Scenario', columns='Sens', values='PB_Score').fillna(np.nan)
+        stats_source_df = display_data_source.pivot_table(index='Scenario', columns='Sens', values=display_value_col if display_mode != "Play Count" else 'PB_Score').fillna(np.nan)
 
         all_sens_cols = [c for c in display_df.columns if self.is_float(c)]
         valid_sens_cols = []
@@ -809,11 +945,9 @@ class App(customtkinter.CTk):
         if valid_sens_cols and not grid_data.empty and display_mode != "Play Count":
             numeric_data_rating = grid_data[valid_sens_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
             rating = numeric_data_rating.mean().mean()
-            # Localized
             self.rating_label.configure(text=locales.get_text(self.current_language, "rating", val=round(rating)))
         else: self.rating_label.configure(text="Rating: -")
 
-        # Update Recents logic remains
         current_scenario = self.scenario_search_var.get()
         current_axis = self.variable_axis_var.get()
         current_recent_entry = {"name": current_scenario, "axis": current_axis}
@@ -832,7 +966,6 @@ class App(customtkinter.CTk):
             avg_row_series['Best'] = best_avg_score
             avg_row_series['cm'] = best_avg_cm
             avg_row_series['%'] = percent_vs_base
-            # Localized
             avg_row_series['Scenario'] = locales.get_text(self.current_language, "avg_row")
 
         grid_data.reset_index(inplace=True)
@@ -868,11 +1001,9 @@ class App(customtkinter.CTk):
                         try: values[r_idx][c_idx] = int(round(float(cell)))
                         except (ValueError, TypeError): continue
         
-        # Localize Headers
         formatted_columns = []
         for col in grid_data.columns:
-            if self.is_float(col):
-                formatted_columns.append(f"{col}cm") # Could localize 'cm' if needed but it's standard
+            if self.is_float(col): formatted_columns.append(f"{col}cm")
             elif col == "AVG": formatted_columns.append(locales.get_text(self.current_language, "col_avg"))
             elif col == "Best": formatted_columns.append(locales.get_text(self.current_language, "col_best"))
             elif col == "cm": formatted_columns.append(locales.get_text(self.current_language, "col_cm"))
@@ -885,7 +1016,6 @@ class App(customtkinter.CTk):
         if base_df_for_stats is not None:
             for row in grid_data.itertuples(index=False):
                 scenario_name = getattr(row, 'Scenario', None)
-                # Localized check
                 if not scenario_name or scenario_name == locales.get_text(self.current_language, "avg_row"): continue
                 
                 row_runs_df = base_df_for_stats[base_df_for_stats['Scenario'] == scenario_name]
@@ -929,7 +1059,6 @@ class App(customtkinter.CTk):
 
         heatmap_cols = sens_cols + ['Best', 'AVG']
             
-        # Localized check
         avg_row_name = locales.get_text(self.current_language, "avg_row")
         is_avg_row_present = avg_row_name in display_df['Scenario'].values
         if is_avg_row_present:
@@ -958,6 +1087,18 @@ class App(customtkinter.CTk):
                 all_scores_in_grid = all_scores_in_grid[~np.isnan(all_scores_in_grid)]
                 if all_scores_in_grid.size > 0: grid_min_score = np.min(all_scores_in_grid)
             except (ValueError, TypeError): is_target_mode = False
+
+        # --- NEW: Recent Success Logic Prep ---
+        is_recent_success_mode = (mode == "Recent Success")
+        recent_success_runs = None
+        if is_recent_success_mode and self.current_filtered_runs is not None:
+            try: days = int(self.recent_success_days_var.get())
+            except ValueError: days = 14
+            cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days)
+            recent_runs = self.current_filtered_runs[self.current_filtered_runs['Timestamp'] >= cutoff_date]
+            # Group by Scenario/Sens and get max score in period
+            recent_success_runs = recent_runs.groupby(['Scenario', 'Sens'])['Score'].max()
+        # --------------------------------------
 
         for r_idx, row_data in enumerate(highlight_df.itertuples(index=True)):
             scenario_name = row_data.Index
@@ -1001,6 +1142,41 @@ class App(customtkinter.CTk):
                         denominator = target_score_val - grid_min_score
                         if denominator <= 0: denominator = 1
                         norm = (val - grid_min_score) / denominator; self.results_table.frame[r_idx + 1, table_col_idx].configure(fg_color=self.get_heatmap_color(norm))
+                
+                # --- NEW: Recent Success Coloring ---
+                elif is_recent_success_mode:
+                    if col_name not in sens_cols: continue # Only color sensitivity cells
+                    
+                    # Logic: Option B (Green if hit target, Red if played but missed, Grey if not played)
+                    
+                    # Check if played recently at all
+                    was_played_recently = False
+                    hit_target = False
+                    
+                    if recent_success_runs is not None:
+                        try:
+                            # Try to find sens as float
+                            s_val = float(col_name)
+                            if (scenario_name, s_val) in recent_success_runs.index:
+                                was_played_recently = True
+                                max_recent_score = recent_success_runs.loc[(scenario_name, s_val)]
+                                if max_recent_score >= val: # val is the 'displayed score' (PB, Percentile, etc)
+                                    hit_target = True
+                        except (ValueError, KeyError): pass
+
+                    if was_played_recently:
+                        if hit_target:
+                            # Green
+                            self.results_table.frame[r_idx + 1, table_col_idx].configure(fg_color="#2e6931")
+                        else:
+                            # Red (Played but missed)
+                            self.results_table.frame[r_idx + 1, table_col_idx].configure(fg_color="#531F1F")
+                    else:
+                        # Grey (Not played recently) - standard alternating color handled by CTkTable usually, 
+                        # but we can leave it transparent/default or dim it.
+                        # Since user wants "Grey", the default row color is usually fine.
+                        pass
+                # ------------------------------------
 
     def get_heatmap_color(self, normalized_value):
         normalized_value = max(0, min(1, normalized_value)); COLOR_RED, COLOR_YELLOW, COLOR_GREEN = (120, 47, 47), (122, 118, 50), (54, 107, 54)
@@ -1061,13 +1237,15 @@ class App(customtkinter.CTk):
                     text_lines.append("-" * 30)
                     text_lines.append(locales.get_text(self.current_language, "tooltip_launchpad", val=f"{stats['launchpad_avg']:.1f}"))
                 if 'recent_avg' in stats:
-                    text_lines.append(locales.get_text(self.current_language, "tooltip_recent", val=f"{stats['recent_avg']:.1f}"))
-                oracle_msg = stats.get('oracle')
-                if oracle_msg:
-                    text_lines.append("-" * 30)
+                   text_lines.append(locales.get_text(self.current_language, "tooltip_recent", val=f"{stats['recent_avg']:.1f}"))
+
+                   #commenting out until cooked
+                #oracle_msg = stats.get('oracle')
+                #if oracle_msg:
+                #    text_lines.append("-" * 30)
                     # Oracle messages might need translation too, but they come from engine. 
                     # For now, let's assume they stay English or we update engine later.
-                    text_lines.append(oracle_msg)
+                 #   text_lines.append(oracle_msg)
                 
                 return "\n".join(text_lines)
             return get_tooltip_text
@@ -1333,6 +1511,7 @@ class App(customtkinter.CTk):
         total_duration = session_df['Timestamp'].max() - session_start_time
         active_playtime = session_df['Duration'].sum()
         
+        # --- DEFINE HEADER METRICS EARLY ---
         header_metrics = {
             "total_duration_str": self.format_timedelta(total_duration),
             "active_playtime_str": self.format_timedelta(active_playtime),
@@ -1341,39 +1520,192 @@ class App(customtkinter.CTk):
             "total_plays_scenario": session_df['Scenario'].nunique()
         }
         
+        # --- PREPARE DATA FOR GRAPH AND RANKS ---
         relevant_keys = set(zip(session_df['Scenario'], session_df['Sens']))
         relevant_history = history_before_session[history_before_session.set_index(['Scenario', 'Sens']).index.isin(relevant_keys)]
 
-        running_stats = defaultdict(lambda: {'sum': 0.0, 'count': 0})
+        # 1. PRE-SESSION AVG MAPS (Grid AND Scenario)
+        pre_session_avgs_grid = {}
         if not relevant_history.empty:
-            grouped_history = relevant_history.groupby(['Scenario', 'Sens'])['Score'].agg(['sum', 'count'])
-            for (scen, sens), row in grouped_history.iterrows():
-                running_stats[(scen, sens)]['sum'] = row['sum']
-                running_stats[(scen, sens)]['count'] = row['count']
-
-        graph_data = []
-        sorted_session = session_df.sort_values('Timestamp')
-        for row in sorted_session.itertuples():
-            key = (row.Scenario, row.Sens)
-            stats = running_stats[key]
-            if stats['count'] > 0:
-                current_avg = stats['sum'] / stats['count']
-                perf_pct = ((row.Score - current_avg) / current_avg) * 100
-            else: perf_pct = 0.0 
-            graph_data.append({'time': row.Timestamp, 'pct': perf_pct, 'scenario': row.Scenario, 'sens': row.Sens})
-            stats['sum'] += row.Score; stats['count'] += 1
+            pre_session_avgs_grid = relevant_history.groupby(['Scenario', 'Sens'])['Score'].mean().to_dict()
+            
+        # For Scenario mode, we need history grouped just by Scenario
+        # Filter all history for relevant scenarios
+        relevant_scenarios = set(session_df['Scenario'])
+        hist_scen_only = history_before_session[history_before_session['Scenario'].isin(relevant_scenarios)]
+        pre_session_avgs_scen = {}
+        if not hist_scen_only.empty:
+            pre_session_avgs_scen = hist_scen_only.groupby('Scenario')['Score'].mean().to_dict()
         
+        # 2. Rank Logic Helpers
+        history_scores_map = defaultdict(list)
+        if not relevant_history.empty:
+            for (scen, sens), group in relevant_history.groupby(['Scenario', 'Sens']):
+                history_scores_map[(scen, sens)] = sorted(group['Score'].tolist())
+
+        rank_definitions = [
+            ("SINGULARITY", 100),
+            ("ARCADIA", 95),
+            ("UBER", 90),
+            ("EXALTED", 82),
+            ("BLESSED", 75),
+            ("TRANSMUTE", 55)
+        ]
+        gated_ranks = {"SINGULARITY", "ARCADIA", "UBER"}
+        min_runs_for_gate = 10 
+        session_rank_counts = {name: 0 for name, _ in rank_definitions}
+        # ----------------------------------------
+
+        graph_data_grid = []
+        graph_data_scenario = []
+        
+        sorted_session = session_df.sort_values('Timestamp')
+        
+        # Accumulators
+        acc_grid = defaultdict(lambda: {'sum': 0.0, 'count': 0})
+        acc_scen = defaultdict(lambda: {'sum': 0.0, 'count': 0})
+        
+        global_pct_history = [] 
+        previous_pulse = 0.0 
+        
+        for i, row in enumerate(sorted_session.itertuples()):
+            # --- GLOBAL METRICS CALCULATION (Based on Grid Performance) ---
+            # Note: Global Flow/Pulse usually track the "Grid" performance (most specific context).
+            # We calculate the pct stats first to use in global metrics.
+            
+            key_grid = (row.Scenario, row.Sens)
+            base_grid = pre_session_avgs_grid.get(key_grid, 0)
+            
+            # Update Grid Accumulator
+            g_acc = acc_grid[key_grid]
+            g_acc['sum'] += row.Score; g_acc['count'] += 1
+            curr_avg_grid = g_acc['sum'] / g_acc['count']
+            
+            # Calc Grid PCT (With Fallback)
+            effective_base_grid = base_grid if base_grid > 0 else curr_avg_grid
+            if effective_base_grid > 0:
+                score_pct_grid = ((row.Score - effective_base_grid) / effective_base_grid) * 100
+                trend_pct_grid = ((curr_avg_grid - effective_base_grid) / effective_base_grid) * 100
+            else:
+                score_pct_grid, trend_pct_grid = 0.0, 0.0
+
+            # Update Global Flow/Pulse using Grid PCT
+            global_pct_history.append(score_pct_grid)
+            
+            try: w_size = int(self.graph_flow_window_var.get())
+            except ValueError: w_size = 5
+            if w_size < 1: w_size = 5
+            
+            recent_global = global_pct_history[-w_size:]
+            flow_pct = sum(recent_global) / len(recent_global)
+            
+            k = 0.5
+            if i == 0: pulse_pct = score_pct_grid
+            else: pulse_pct = (score_pct_grid * k) + (previous_pulse * (1 - k))
+            previous_pulse = pulse_pct
+
+            # --- APPEND GRID DATA ---
+            graph_data_grid.append({
+                'time': row.Timestamp, 
+                'pct': score_pct_grid,       
+                'trend_pct': trend_pct_grid, 
+                'flow_pct': flow_pct,   
+                'pulse_pct': pulse_pct, 
+                'scenario': row.Scenario, 
+                'sens': row.Sens
+            })
+            
+            # --- SCENARIO GRAPH CALCULATION ---
+            key_scen = row.Scenario
+            base_scen = pre_session_avgs_scen.get(key_scen, 0)
+            
+            s_acc = acc_scen[key_scen]
+            s_acc['sum'] += row.Score; s_acc['count'] += 1
+            curr_avg_scen = s_acc['sum'] / s_acc['count']
+            
+            # Fallback Logic for Scenario
+            effective_base_scen = base_scen if base_scen > 0 else curr_avg_scen
+            
+            if effective_base_scen > 0:
+                score_pct_scen = ((row.Score - effective_base_scen) / effective_base_scen) * 100
+                trend_pct_scen = ((curr_avg_scen - effective_base_scen) / effective_base_scen) * 100
+            else:
+                score_pct_scen, trend_pct_scen = 0.0, 0.0
+            
+            graph_data_scenario.append({
+                'time': row.Timestamp, 
+                'pct': score_pct_scen,       
+                'trend_pct': trend_pct_scen, 
+                'flow_pct': flow_pct,   # Use same global flow/pulse
+                'pulse_pct': pulse_pct, 
+                'scenario': row.Scenario, 
+                'sens': row.Sens
+            })
+
+            # -- Rank Logic (Unchanged) --
+            hist_list = history_scores_map[key_grid]
+            current_run_count = len(hist_list) + 1 if hist_list else 1
+            
+            if hist_list:
+                current_pb = hist_list[-1]
+                is_singularity = row.Score >= current_pb
+                
+                idx = bisect.bisect_left(hist_list, row.Score)
+                percentile = (idx / len(hist_list)) * 100
+                
+                if is_singularity:
+                    for rank_name, _ in rank_definitions:
+                        if current_run_count < min_runs_for_gate and rank_name in gated_ranks: continue
+                        session_rank_counts[rank_name] += 1
+                else:
+                    for rank_name, threshold in rank_definitions:
+                        if rank_name == "SINGULARITY": continue
+                        if current_run_count < min_runs_for_gate and rank_name in gated_ranks: continue
+                        if percentile >= threshold:
+                            session_rank_counts[rank_name] += 1
+                
+                bisect.insort(hist_list, row.Score)
+            else:
+                history_scores_map[key_grid] = [row.Score]
+                for rank_name, _ in rank_definitions:
+                    if current_run_count < min_runs_for_gate and rank_name in gated_ranks: continue
+                    session_rank_counts[rank_name] += 1
+
         report_data = {"grid": defaultdict(list), "scenario": defaultdict(list)}
+        report_data["rank_counts"] = session_rank_counts
+        report_data["rank_gate_val"] = min_runs_for_gate 
+        report_data["rank_defs"] = rank_definitions
+        
+        # --- PBs and Lists Logic (Unchanged) ---
         all_time_grid_stats = self.all_runs_df.groupby(['Scenario', 'Sens'])['Score'].agg(['mean', 'size'])
         prev_grid_pb = history_before_session.groupby(['Scenario', 'Sens'])['Score'].max()
         all_time_scen_stats = self.all_runs_df.groupby('Scenario')['Score'].agg(['mean', 'size'])
         prev_scen_pb = history_before_session.groupby('Scenario')['Score'].max()
         
+        total_grid_pbs_count = 0
+        total_scen_pbs_count = 0
+        
+        # Grid Loop
         for (scenario, sens), group in session_df.groupby(['Scenario', 'Sens']):
             session_pb = group['Score'].max()
-            is_first_time = (scenario, sens) not in prev_grid_pb.index
-            prev_pb = 0 if is_first_time else prev_grid_pb.loc[(scenario, sens)]
-            is_pb = not is_first_time and session_pb > prev_pb
+            is_first_time_grid = (scenario, sens) not in prev_grid_pb.index
+            
+            prev_pb_val = 0
+            is_pb = False
+            global_prev_pb = prev_scen_pb.loc[scenario] if scenario in prev_scen_pb.index else 0
+            
+            if is_first_time_grid:
+                if global_prev_pb > 0 and session_pb >= global_prev_pb:
+                    is_pb = True
+                    prev_pb_val = global_prev_pb
+                else:
+                    is_pb = False
+            else:
+                prev_pb_val = prev_grid_pb.loc[(scenario, sens)]
+                is_pb = session_pb >= prev_pb_val
+
+            if is_pb: total_grid_pbs_count += 1
+
             session_avg = group['Score'].mean()
             all_time_avg = all_time_grid_stats.loc[(scenario, sens)]['mean'] if (scenario, sens) in all_time_grid_stats.index else 0
             all_time_count = all_time_grid_stats.loc[(scenario, sens)]['size'] if (scenario, sens) in all_time_grid_stats.index else 0
@@ -1382,17 +1714,20 @@ class App(customtkinter.CTk):
                         "session_avg": session_avg, "all_time_avg": all_time_avg, "all_time_play_count": all_time_count,
                         "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, "is_pb": is_pb }
             report_data["grid"]["played"].append(item)
-            if not is_first_time: report_data["grid"]["averages"].append(item)
+            if not is_first_time_grid: report_data["grid"]["averages"].append(item)
             if is_pb:
                 item_pb = item.copy()
-                item_pb.update({ "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb, "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf') })
+                item_pb.update({ "new_score": session_pb, "prev_score": prev_pb_val, "improvement_pts": session_pb - prev_pb_val, "improvement_pct": (session_pb / prev_pb_val - 1) * 100 if prev_pb_val > 0 else float('inf') })
                 report_data["grid"]["pbs"].append(item_pb)
 
+        # Scenario Loop
         for scenario, group in session_df.groupby('Scenario'):
             session_pb = group['Score'].max()
-            is_first_time = scenario not in prev_scen_pb.index
-            prev_pb = 0 if is_first_time else prev_scen_pb.loc[scenario]
-            is_pb = not is_first_time and session_pb > prev_pb
+            is_first_time_scen = scenario not in prev_scen_pb.index
+            prev_pb_val = 0 if is_first_time_scen else prev_scen_pb.loc[scenario]
+            is_pb = not is_first_time_scen and session_pb >= prev_pb_val
+            if is_pb: total_scen_pbs_count += 1
+            
             session_avg = group['Score'].mean()
             all_time_avg = all_time_scen_stats.loc[scenario]['mean'] if scenario in all_time_scen_stats.index else 0
             all_time_count = all_time_scen_stats.loc[scenario]['size'] if scenario in all_time_scen_stats.index else 0
@@ -1401,15 +1736,25 @@ class App(customtkinter.CTk):
                         "session_avg": session_avg, "all_time_avg": all_time_avg, "all_time_play_count": all_time_count,
                         "perf_vs_avg": (session_avg / all_time_avg - 1) * 100 if all_time_avg > 0 else 0, "is_pb": is_pb }
             report_data["scenario"]["played"].append(item)
-            if not is_first_time: report_data["scenario"]["averages"].append(item)
+            if not is_first_time_scen: report_data["scenario"]["averages"].append(item)
             if is_pb:
                 item_pb = item.copy()
-                item_pb.update({ "new_score": session_pb, "prev_score": prev_pb, "improvement_pts": session_pb - prev_pb, "improvement_pct": (session_pb / prev_pb - 1) * 100 if prev_pb > 0 else float('inf') })
+                item_pb.update({ "new_score": session_pb, "prev_score": prev_pb_val, "improvement_pts": session_pb - prev_pb_val, "improvement_pct": (session_pb / prev_pb_val - 1) * 100 if prev_pb_val > 0 else float('inf') })
                 report_data["scenario"]["pbs"].append(item_pb)
         
-        session_date_str = session_start_time.strftime('%B %d, %Y')
-        return (header_metrics, report_data, session_date_str, graph_data)
+        header_metrics["total_pbs_grid"] = total_grid_pbs_count
+        header_metrics["total_pbs_scenario"] = total_scen_pbs_count
 
+        session_date_str = session_start_time.strftime('%B %d, %Y')
+        
+        # Return dictionary for graph_data to handle both modes
+        graph_data_payload = {
+            "grid": graph_data_grid,
+            "scenario": graph_data_scenario
+        }
+        
+        return (header_metrics, report_data, session_date_str, graph_data_payload)
+    
     def _calculate_and_show_report(self, session_id):
         self.status_label.configure(text="Calculating session report...")
         try:
@@ -1424,3 +1769,8 @@ class App(customtkinter.CTk):
 
     def trigger_report_refresh(self, report_window, session_id):
         self.load_stats_thread()
+    
+    def _schedule_refresh(self, *args):
+        if hasattr(self, '_refresh_job') and self._refresh_job:
+            self.after_cancel(self._refresh_job)
+        self._refresh_job = self.after(600, self.on_display_option_change)
