@@ -84,7 +84,8 @@ class App(customtkinter.CTk):
         self.pb_rank_var.trace_add("write", self.schedule_rank_update)
         self.rank_update_job = None
         
-        self.last_custom_rank = 3 
+        self.last_custom_rank = 3
+        self.saved_stats_path = None 
         self.hidden_scenarios = set()
         self.hidden_cms_by_scenario = {}
         self.hidden_cms = set()
@@ -201,6 +202,8 @@ class App(customtkinter.CTk):
                 self.graph_grid_show_sma2_var.set(data.get("graph_grid_show_sma2", False))
                 self.graph_grid_sma2_window_var.set(str(data.get("graph_grid_sma2_window", "10")))
 
+                self.saved_stats_path = data.get("stats_path", None)
+
                 self.collapsed_states['main_controls'] = False
             except (json.JSONDecodeError, AttributeError): 
                 self.favorites,self.recents,self.collapsed_states,self.target_scores_by_scenario,self.format_filter_preferences = [],[],{},{},{}
@@ -263,6 +266,7 @@ class App(customtkinter.CTk):
             "graph_grid_sma_window": self.graph_grid_sma_window_var.get(),
             "graph_grid_show_sma2": self.graph_grid_show_sma2_var.get(),
             "graph_grid_sma2_window": self.graph_grid_sma2_window_var.get(),
+            "stats_path": self.path_entry.get(),
         }
         with open(USER_DATA_FILE, 'w') as f: json.dump(data_to_save, f, indent=2)
 
@@ -1460,12 +1464,34 @@ class App(customtkinter.CTk):
         if folder_path: self.path_entry.delete(0, "end"); self.path_entry.insert(0, folder_path)
 
     def set_default_path(self):
+        # 1. Priority: Use the path saved in user_data.json if it exists
+        if self.saved_stats_path and os.path.exists(self.saved_stats_path):
+            self.path_entry.insert(0, self.saved_stats_path)
+            return
+
+        # 2. Fallback: Check common installation locations (Expanded List)
         home = Path.home()
         paths_to_check = [
+            # Windows - Standard
             Path("C:/Program Files (x86)/Steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats"),
+            # Windows - Common Secondary Drive
+            Path("D:/SteamLibrary/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats"),
+            
+            # Linux - Native Steam (Debian/Arch/Fedora etc)
             home / ".steam/steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats",
-            home / ".local/share/Steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats"
+            home / ".local/share/Steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats",
+            
+            # Linux - Flatpak (Steam Deck / Mint / PopOS)
+            home / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats",
+            home / ".var/app/com.valvesoftware.Steam/.steam/steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats",
+
+            # Linux - Snap (Ubuntu)
+            home / "snap/steam/common/.local/share/Steam/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats",
+
+            # Linux - Custom Mounts (Common for secondary drives)
+            Path("/mnt/Games/SteamLibrary/steamapps/common/FPSAimTrainer/FPSAimTrainer/stats"),
         ]
+        
         for path in paths_to_check:
             if path.exists():
                 self.path_entry.insert(0, str(path))

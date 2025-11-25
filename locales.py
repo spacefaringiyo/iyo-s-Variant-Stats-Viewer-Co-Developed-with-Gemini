@@ -4,7 +4,7 @@
 TRANSLATIONS = {
     "en": {
         # Main UI
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
         "search_label": "Search for Base Scenario:",
         "ready_label": "Ready. Select stats folder and click 'Load Stats'.",
         "loading_label": "Loading stats, please wait...",
@@ -119,7 +119,7 @@ TRANSLATIONS = {
     },
     
     "jp": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
         "search_label": "シナリオ検索:",
         "ready_label": "準備完了。フォルダを選択して読み込んでください。",
         "loading_label": "読み込み中...",
@@ -226,7 +226,7 @@ TRANSLATIONS = {
     },
 
     "pt": {
-        "window_title": "Visualizador de Estatísticas KovaaK por iyo & Gemini (v1.23)",
+        "window_title": "Visualizador de Estatísticas KovaaK por iyo & Gemini (v1.23.1)",
         "search_label": "Buscar Cenário Base:",
         "ready_label": "Pronto. Selecione a pasta e clique em 'Carregar'.",
         "loading_label": "Carregando estatísticas...",
@@ -333,7 +333,7 @@ TRANSLATIONS = {
     },
 
     "cn": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
         "search_label": "搜索基础场景:",
         "ready_label": "就绪。请选择文件夹并点击“加载统计”。",
         "loading_label": "正在加载统计数据...",
@@ -440,7 +440,7 @@ TRANSLATIONS = {
     },
 
     "es": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
         "search_label": "Buscar Escenario Base:",
         "ready_label": "Listo. Seleccione carpeta y haga clic en 'Cargar Estadísticas'.",
         "loading_label": "Cargando estadísticas...",
@@ -547,7 +547,7 @@ TRANSLATIONS = {
     },
 
     "ko": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
         "search_label": "기본 시나리오 검색:",
         "ready_label": "준비 완료. 폴더를 선택하고 '통계 불러오기'를 클릭하세요.",
         "loading_label": "통계 불러오는 중...",
@@ -654,7 +654,7 @@ TRANSLATIONS = {
     },
 
     "ru": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
         "search_label": "Поиск сценария:",
         "ready_label": "Готово. Выберите папку и нажмите 'Загрузить'.",
         "loading_label": "Загрузка статистики...",
@@ -761,7 +761,7 @@ TRANSLATIONS = {
     },
 
     "ua": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
         "search_label": "Пошук сценарію:",
         "ready_label": "Готово. Оберіть папку та натисніть 'Завантажити'.",
         "loading_label": "Завантаження статистики...",
