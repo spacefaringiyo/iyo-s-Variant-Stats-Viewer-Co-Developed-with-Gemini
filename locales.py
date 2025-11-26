@@ -1,10 +1,14 @@
 # locales.py
 
+# --- CENTRAL VERSION CONTROL ---
+APP_VERSION = "v1.24"
+# -------------------------------
+
 # Dictionary of all text used in the app
 TRANSLATIONS = {
     "en": {
         # Main UI
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini ({ver})", # Use {ver} placeholder
         "search_label": "Search for Base Scenario:",
         "ready_label": "Ready. Select stats folder and click 'Load Stats'.",
         "loading_label": "Loading stats, please wait...",
@@ -60,7 +64,7 @@ TRANSLATIONS = {
         "hl_recent_success": "Recent Success (Days)",
         
         # Grid Headers / Tooltips
-        "rating": "Rating: {val}",
+        "rating": "Global Average: {val}",
         "avg_row": "-- Averages --",
         "col_avg": "AVG",
         "col_best": "Best",
@@ -103,14 +107,18 @@ TRANSLATIONS = {
         # Graph Window
         "graph_view_mode": "View Mode:",
         "graph_raw": "Raw Data",
-        "graph_daily": "Daily Average",
-        "graph_weekly": "Weekly Average",
-        "graph_monthly": "Monthly Average",
-        "graph_session": "Session Average",
+        "graph_daily": "Daily Avg",
+        "graph_weekly": "Weekly Avg",
+        "graph_monthly": "Monthly Avg",
+        "graph_session": "Session Avg",
+        "graph_grouped": "Grouped Avg", # NEW
+        "graph_hide_count": "Hide Count <=",
         
         "graph_hide_low": "Hide scores below:",
         "graph_connect": "Connect Sessions",
         "graph_4color": "4-Color Cycle",
+        "graph_color_sens": "Color by Sens", # NEW
+        "graph_group_size": "Group Size (N=)", # NEW
         
         # Misc
         "restart_msg": "Please restart the application to apply language changes.",
@@ -119,7 +127,7 @@ TRANSLATIONS = {
     },
     
     "jp": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini ({ver})",
         "search_label": "シナリオ検索:",
         "ready_label": "準備完了。フォルダを選択して読み込んでください。",
         "loading_label": "読み込み中...",
@@ -170,7 +178,7 @@ TRANSLATIONS = {
         "hl_target": "目標スコア",
         "hl_recent_success": "最近の達成 (日数)",
         
-        "rating": "レーティング: {val}",
+        "rating": "全体平均: {val}",
         "avg_row": "-- 平均 --",
         "col_avg": "平均",
         "col_best": "ベスト",
@@ -215,10 +223,13 @@ TRANSLATIONS = {
         "graph_weekly": "週別平均",
         "graph_monthly": "月別平均",
         "graph_session": "セッション平均",
+        "graph_grouped": "グループ平均", # NEW
         
         "graph_hide_low": "以下のスコアを非表示:",
         "graph_connect": "セッションを繋ぐ",
         "graph_4color": "4色サイクル",
+        "graph_color_sens": "感度別カラー", # NEW
+        "graph_group_size": "グループサイズ (N=)", # NEW
         
         "restart_msg": "言語変更を適用するには再起動してください。",
         "restart_title": "再起動が必要です",
@@ -226,7 +237,7 @@ TRANSLATIONS = {
     },
 
     "pt": {
-        "window_title": "Visualizador de Estatísticas KovaaK por iyo & Gemini (v1.23.1)",
+        "window_title": "Visualizador de Estatísticas KovaaK por iyo & Gemini ({ver})",
         "search_label": "Buscar Cenário Base:",
         "ready_label": "Pronto. Selecione a pasta e clique em 'Carregar'.",
         "loading_label": "Carregando estatísticas...",
@@ -277,7 +288,7 @@ TRANSLATIONS = {
         "hl_target": "Meta de Pontuação",
         "hl_recent_success": "Sucesso Recente (Dias)",
         
-        "rating": "Avaliação: {val}",
+        "rating": "Média Global: {val}",
         "avg_row": "-- Médias --",
         "col_avg": "MÉDIA",
         "col_best": "Melhor",
@@ -322,10 +333,13 @@ TRANSLATIONS = {
         "graph_weekly": "Média Semanal",
         "graph_monthly": "Média Mensal",
         "graph_session": "Média da Sessão",
+        "graph_grouped": "Média Agrupada", # NEW
         
         "graph_hide_low": "Ocultar abaixo de:",
         "graph_connect": "Conectar Sessões",
         "graph_4color": "Ciclo 4 Cores",
+        "graph_color_sens": "Cor por Sens", # NEW
+        "graph_group_size": "Tam. Grupo (N=)", # NEW
         
         "restart_msg": "Por favor, reinicie o aplicativo para aplicar o idioma.",
         "restart_title": "Reinicialização Necessária",
@@ -333,7 +347,7 @@ TRANSLATIONS = {
     },
 
     "cn": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini ({ver})",
         "search_label": "搜索基础场景:",
         "ready_label": "就绪。请选择文件夹并点击“加载统计”。",
         "loading_label": "正在加载统计数据...",
@@ -384,7 +398,7 @@ TRANSLATIONS = {
         "hl_target": "目标分数",
         "hl_recent_success": "近期达成 (天数)",
         
-        "rating": "评分: {val}",
+        "rating": "全局平均: {val}",
         "avg_row": "-- 平均 --",
         "col_avg": "平均",
         "col_best": "最佳",
@@ -429,10 +443,13 @@ TRANSLATIONS = {
         "graph_weekly": "周平均",
         "graph_monthly": "月平均",
         "graph_session": "会话平均",
+        "graph_grouped": "分组平均", # NEW
         
         "graph_hide_low": "隐藏低于:",
         "graph_connect": "连接会话",
         "graph_4color": "4色循环",
+        "graph_color_sens": "按灵敏度着色", # NEW
+        "graph_group_size": "组大小 (N=)", # NEW
         
         "restart_msg": "请重启应用以应用语言更改。",
         "restart_title": "需要重启",
@@ -440,7 +457,7 @@ TRANSLATIONS = {
     },
 
     "es": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini ({ver})",
         "search_label": "Buscar Escenario Base:",
         "ready_label": "Listo. Seleccione carpeta y haga clic en 'Cargar Estadísticas'.",
         "loading_label": "Cargando estadísticas...",
@@ -491,7 +508,7 @@ TRANSLATIONS = {
         "hl_target": "Puntuación Objetivo",
         "hl_recent_success": "Éxito Reciente (Días)",
         
-        "rating": "Clasificación: {val}",
+        "rating": "Promedio Global: {val}",
         "avg_row": "-- Promedios --",
         "col_avg": "PROM",
         "col_best": "Mejor",
@@ -536,10 +553,13 @@ TRANSLATIONS = {
         "graph_weekly": "Promedio Semanal",
         "graph_monthly": "Promedio Mensual",
         "graph_session": "Promedio Sesión",
+        "graph_grouped": "Promedio Agrupado", # NEW
         
         "graph_hide_low": "Ocultar menos de:",
         "graph_connect": "Conectar Sesiones",
         "graph_4color": "Ciclo 4 Colores",
+        "graph_color_sens": "Color por Sens", # NEW
+        "graph_group_size": "Tam. Grupo (N=)", # NEW
         
         "restart_msg": "Reinicie la aplicación para aplicar cambios de idioma.",
         "restart_title": "Reinicio Requerido",
@@ -547,7 +567,7 @@ TRANSLATIONS = {
     },
 
     "ko": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini ({ver})",
         "search_label": "기본 시나리오 검색:",
         "ready_label": "준비 완료. 폴더를 선택하고 '통계 불러오기'를 클릭하세요.",
         "loading_label": "통계 불러오는 중...",
@@ -598,7 +618,7 @@ TRANSLATIONS = {
         "hl_target": "목표 점수",
         "hl_recent_success": "최근 달성 (일수)",
         
-        "rating": "레이팅: {val}",
+        "rating": "전체 평균: {val}",
         "avg_row": "-- 평균 --",
         "col_avg": "평균",
         "col_best": "최고",
@@ -643,10 +663,13 @@ TRANSLATIONS = {
         "graph_weekly": "주별 평균",
         "graph_monthly": "월별 평균",
         "graph_session": "세션 평균",
+        "graph_grouped": "그룹 평균", # NEW
         
         "graph_hide_low": "낮은 점수 숨기기:",
         "graph_connect": "세션 연결선",
         "graph_4color": "4색 순환",
+        "graph_color_sens": "감도별 색상", # NEW
+        "graph_group_size": "그룹 크기 (N=)", # NEW
         
         "restart_msg": "언어 설정을 적용하려면 앱을 다시 시작하세요.",
         "restart_title": "재시작 필요",
@@ -654,7 +677,7 @@ TRANSLATIONS = {
     },
 
     "ru": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini ({ver})",
         "search_label": "Поиск сценария:",
         "ready_label": "Готово. Выберите папку и нажмите 'Загрузить'.",
         "loading_label": "Загрузка статистики...",
@@ -705,7 +728,7 @@ TRANSLATIONS = {
         "hl_target": "Целевой счет",
         "hl_recent_success": "Недавний успех (Дни)",
         
-        "rating": "Рейтинг: {val}",
+        "rating": "Глобальное среднее: {val}",
         "avg_row": "-- Среднее --",
         "col_avg": "СРЕД",
         "col_best": "Лучший",
@@ -750,10 +773,13 @@ TRANSLATIONS = {
         "graph_weekly": "По неделям",
         "graph_monthly": "По месяцам",
         "graph_session": "По сессиям",
+        "graph_grouped": "По группам", # NEW
         
         "graph_hide_low": "Скрыть ниже:",
         "graph_connect": "Соединить линии",
         "graph_4color": "4 цвета",
+        "graph_color_sens": "Цвет по сенсе", # NEW
+        "graph_group_size": "Размер группы (N=)", # NEW
         
         "restart_msg": "Перезапустите приложение для смены языка.",
         "restart_title": "Требуется перезапуск",
@@ -761,7 +787,7 @@ TRANSLATIONS = {
     },
 
     "ua": {
-        "window_title": "Variant Stats Viewer by iyo & Gemini (v1.23.1)",
+        "window_title": "Variant Stats Viewer by iyo & Gemini ({ver})",
         "search_label": "Пошук сценарію:",
         "ready_label": "Готово. Оберіть папку та натисніть 'Завантажити'.",
         "loading_label": "Завантаження статистики...",
@@ -812,7 +838,7 @@ TRANSLATIONS = {
         "hl_target": "Цільовий рахунок",
         "hl_recent_success": "Нещодавній успіх (Дні)",
         
-        "rating": "Рейтинг: {val}",
+        "rating": "Глобальне середнє: {val}",
         "avg_row": "-- Середнє --",
         "col_avg": "СЕРЕД",
         "col_best": "Найкраще",
@@ -857,10 +883,13 @@ TRANSLATIONS = {
         "graph_weekly": "По тижнях",
         "graph_monthly": "По місяцях",
         "graph_session": "По сесіях",
+        "graph_grouped": "По групах", # NEW
         
         "graph_hide_low": "Приховати нижче:",
         "graph_connect": "З'єднати лінії",
         "graph_4color": "4 кольори",
+        "graph_color_sens": "Колір за сенсою", # NEW
+        "graph_group_size": "Розмір групи (N=)", # NEW
         
         "restart_msg": "Перезапустіть додаток для зміни мови.",
         "restart_title": "Потрібен перезапуск",
@@ -873,7 +902,11 @@ def get_text(lang_code, key, **kwargs):
     Retrieves text for the given language code and key.
     Falls back to 'en' if language or key is missing.
     Accepts kwargs for string formatting (e.g., {val}).
+    Injects {ver} automatically if not provided.
     """
+    # Auto-inject version if not provided
+    kwargs.setdefault('ver', APP_VERSION)
+
     lang_dict = TRANSLATIONS.get(lang_code, TRANSLATIONS["en"])
     text = lang_dict.get(key, TRANSLATIONS["en"].get(key, f"MISSING: {key}"))
     

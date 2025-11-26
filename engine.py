@@ -128,14 +128,22 @@ def find_and_process_stats(stats_folder_path, session_gap_minutes=30):
 def aggregate_data(df, period):
     if df.empty:
         return pd.DataFrame()
+    
     if period == 'Session':
         if 'SessionID' not in df.columns:
             return pd.DataFrame()
-        agg = df.groupby('SessionID').agg(Score=('Score', 'mean'), Timestamp=('Timestamp', 'first'))
+        # Added 'count' aggregation
+        agg = df.groupby('SessionID').agg(
+            Score=('Score', 'mean'), 
+            Timestamp=('Timestamp', 'first'),
+            Count=('Score', 'count') 
+        )
         return agg.reset_index().sort_values('Timestamp')
     else:
         df_resample = df.set_index('Timestamp')
-        agg = df_resample['Score'].resample(period).mean().dropna()
+        # Added 'count' aggregation for time series
+        agg = df_resample['Score'].resample(period).agg(['mean', 'count']).dropna()
+        agg = agg.rename(columns={'mean': 'Score', 'count': 'Count'})
         return agg.reset_index()
 
 def get_scenario_family_info(all_runs_df, base_scenario):
@@ -380,10 +388,13 @@ def calculate_detailed_stats(runs_df):
     stats = {
         'count': len(runs_df),
         'max': pb_row['Score'],
-        'pb_date': pb_row['Timestamp']
+        'pb_date': pb_row['Timestamp'],
+        'pb_sens': pb_row.get('Sens', None)
     }
+    
     if len(runs_df) < config['min_runs_for_foundational']:
         return stats
+
 
     q1 = runs_df['Score'].quantile(0.25)
     q3 = runs_df['Score'].quantile(0.75)

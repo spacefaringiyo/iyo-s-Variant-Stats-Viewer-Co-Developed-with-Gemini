@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from datetime import timedelta
-import locales # --- NEW: Import Locales ---
+import locales 
 
 class SessionHistoryWindow(customtkinter.CTkToplevel):
     def __init__(self, master, session_list):
@@ -529,11 +529,11 @@ class SessionReportWindow(customtkinter.CTkToplevel):
         self._refresh_job = self.after(800, self.request_refresh)
 
 class GraphWindow(customtkinter.CTkToplevel):
-    def __init__(self, master, full_data, hide_settings, save_callback, graph_id, title):
+    def __init__(self, master, full_data, hide_settings, save_callback, graph_id, title, visible_sensitivities=None, graph_context="sens"):
         super().__init__(master)
         self.lang = master.current_language
         self.title(title)
-        self.geometry("950x700")
+        self.geometry("1150x700") 
         self.transient(master)
 
         self.app_master = master 
@@ -542,26 +542,30 @@ class GraphWindow(customtkinter.CTkToplevel):
         self.save_callback = save_callback
         self.graph_id = graph_id
         self.title_text = title
+        self.visible_sensitivities = visible_sensitivities if visible_sensitivities is not None else []
+        self.graph_context = graph_context # "scenario" or "sens"
         
-        # --- BIND TO MASTER PERSISTENT VARS ---
+        # ... [Keep existing variable bindings] ...
         self.show_trend_var = master.graph_grid_show_trend_var
-        
-        # SMA 1 (Purple)
         self.show_sma_var = master.graph_grid_show_sma_var
         self.sma_window_var = master.graph_grid_sma_window_var
-        
-        # SMA 2 (Cyan)
         self.show_sma2_var = master.graph_grid_show_sma2_var
         self.sma2_window_var = master.graph_grid_sma2_window_var
         
-        # Auto-Refresh Traces
         if not hasattr(self, 'sma_trace_added'):
             self.sma_window_var.trace_add("write", self._schedule_refresh)
             self.sma2_window_var.trace_add("write", self._schedule_refresh)
             self.sma_trace_added = True
-        # --------------------------------------
         
-        self.view_key_map = {"Raw Data": "raw", "Daily Average": "daily", "Weekly Average": "weekly", "Monthly Average": "monthly", "Session Average": "session"}
+        self.view_key_map = {
+            locales.get_text(self.lang, "graph_raw"): "raw",
+            locales.get_text(self.lang, "graph_grouped"): "grouped",
+            locales.get_text(self.lang, "graph_daily"): "daily",
+            locales.get_text(self.lang, "graph_weekly"): "weekly",
+            locales.get_text(self.lang, "graph_monthly"): "monthly",
+            locales.get_text(self.lang, "graph_session"): "session"
+        }
+        self.code_to_label = {v: k for k, v in self.view_key_map.items()}
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.bind("<F5>", self.request_refresh)
@@ -570,22 +574,54 @@ class GraphWindow(customtkinter.CTkToplevel):
         top_control_frame = customtkinter.CTkFrame(self); top_control_frame.pack(fill="x", padx=10, pady=(10,0))
         bottom_control_frame = customtkinter.CTkFrame(self); bottom_control_frame.pack(fill="x", padx=10, pady=(0,5))
 
-        # Localized
+        # View Mode
+        saved_code = self.hide_settings.get("view_mode", "raw")
+        if saved_code not in self.code_to_label: saved_code = "raw"
+        current_label = self.code_to_label[saved_code]
+        self.aggregation_var = customtkinter.StringVar(value=current_label)
+        
         customtkinter.CTkLabel(top_control_frame, text=locales.get_text(self.lang, "graph_view_mode")).pack(side="left", padx=(10,5), pady=5)
-        self.aggregation_var = customtkinter.StringVar(value="Raw Data")
         
-        aggregation_menu = customtkinter.CTkOptionMenu(top_control_frame, variable=self.aggregation_var,
-                                                       values=["Raw Data", "Daily Average", "Weekly Average", "Monthly Average", "Session Average"],
-                                                       command=self.on_view_mode_change)
-        aggregation_menu.pack(side="left", padx=5, pady=5)
+        self.view_selector = customtkinter.CTkSegmentedButton(
+            top_control_frame,
+            values=list(self.view_key_map.keys()),
+            variable=self.aggregation_var,
+            command=self.on_view_mode_change
+        )
+        self.view_selector.pack(side="left", padx=10, pady=5)
         
+        # --- MIN RUNS FILTER (NEW) ---
+        # Load Global Preference
+        current_min = self.app_master.min_runs_global.get(self.graph_context, 1)
+        self.min_runs_var = customtkinter.StringVar(value=str(current_min))
+        
+        self.min_runs_label = customtkinter.CTkLabel(bottom_control_frame, text=locales.get_text(self.lang, "graph_hide_count"))
+        self.min_runs_entry = customtkinter.CTkEntry(bottom_control_frame, textvariable=self.min_runs_var, width=40)
+        self.min_runs_entry.bind("<Return>", self._on_min_runs_change)
+        
+        # Raw Controls
         self.raw_display_mode_var = customtkinter.StringVar(value=self.hide_settings.get("raw_display_mode", "Line Plot"))
         self.raw_display_menu = customtkinter.CTkOptionMenu(top_control_frame, variable=self.raw_display_mode_var,
                                                             values=["Line Plot", "Dots Only", "Filled Area"],
-                                                            command=self._on_graph_option_change)
+                                                            command=self._on_graph_option_change, width=100)
         
+        saved_color_mode = self.hide_settings.get("graph_color_mode", "Session")
+        self.color_by_var = customtkinter.StringVar(value=saved_color_mode)
+        self.color_by_switch = customtkinter.CTkSwitch(top_control_frame, 
+                                                       text=locales.get_text(self.lang, "graph_color_sens"), 
+                                                       variable=self.color_by_var, onvalue="Sensitivity", offvalue="Session",
+                                                       command=self._on_graph_option_change)
+
+        # Grouped Controls
+        saved_group_size = self.hide_settings.get("group_n_size", "5")
+        self.group_size_var = customtkinter.StringVar(value=str(saved_group_size))
+        self.group_size_label = customtkinter.CTkLabel(top_control_frame, text=locales.get_text(self.lang, "graph_group_size"))
+        self.group_size_entry = customtkinter.CTkEntry(top_control_frame, textvariable=self.group_size_var, width=40)
+        self.group_size_entry.bind("<Return>", self._on_graph_option_change)
+
         customtkinter.CTkButton(top_control_frame, text=locales.get_text(self.lang, "rep_refresh"), width=90, command=self.request_refresh).pack(side="right", padx=10, pady=5)
         
+        # Bottom Controls
         customtkinter.CTkLabel(bottom_control_frame, text=locales.get_text(self.lang, "graph_hide_low")).pack(side="left", padx=(10,5), pady=5)
         self.hide_below_var = customtkinter.StringVar()
         hide_below_entry = customtkinter.CTkEntry(bottom_control_frame, textvariable=self.hide_below_var, width=80)
@@ -598,34 +634,39 @@ class GraphWindow(customtkinter.CTkToplevel):
         self.four_color_cycle_var = customtkinter.StringVar(value=self.hide_settings.get("four_color_cycle", "Off"))
         self.four_color_cycle_switch = customtkinter.CTkSwitch(bottom_control_frame, text=locales.get_text(self.lang, "graph_4color"), variable=self.four_color_cycle_var, onvalue="On", offvalue="Off", command=self._on_graph_option_change)
         
-        # --- Trend Controls ---
+        # Trend Controls
         trend_frame = customtkinter.CTkFrame(bottom_control_frame, fg_color="transparent")
         trend_frame.pack(side="right", padx=10)
-        
-        def toggle_trend(): 
-            self.app_master.save_user_data()
-            self.redraw_plot()
-
+        def toggle_trend(): self.app_master.save_user_data(); self.redraw_plot()
         customtkinter.CTkCheckBox(trend_frame, text="Career Trend", variable=self.show_trend_var, command=toggle_trend, checkbox_height=18, checkbox_width=18, font=("Arial", 11)).pack(side="left", padx=5)
         
-        # SMA 1
-        sma_frame = customtkinter.CTkFrame(trend_frame, fg_color="transparent")
-        sma_frame.pack(side="left", padx=5)
+        sma_frame = customtkinter.CTkFrame(trend_frame, fg_color="transparent"); sma_frame.pack(side="left", padx=5)
         customtkinter.CTkCheckBox(sma_frame, text="SMA (N=)", variable=self.show_sma_var, command=toggle_trend, checkbox_height=18, checkbox_width=18, font=("Arial", 11)).pack(side="left")
-        sma_entry = customtkinter.CTkEntry(sma_frame, textvariable=self.sma_window_var, width=30, height=20, font=("Arial", 11))
-        sma_entry.pack(side="left", padx=(2,0))
+        customtkinter.CTkEntry(sma_frame, textvariable=self.sma_window_var, width=30, height=20, font=("Arial", 11)).pack(side="left", padx=(2,0))
         
-        # SMA 2
-        sma2_frame = customtkinter.CTkFrame(trend_frame, fg_color="transparent")
-        sma2_frame.pack(side="left", padx=5)
+        sma2_frame = customtkinter.CTkFrame(trend_frame, fg_color="transparent"); sma2_frame.pack(side="left", padx=5)
         customtkinter.CTkCheckBox(sma2_frame, text="SMA (N=)", variable=self.show_sma2_var, command=toggle_trend, checkbox_height=18, checkbox_width=18, font=("Arial", 11)).pack(side="left")
-        sma2_entry = customtkinter.CTkEntry(sma2_frame, textvariable=self.sma2_window_var, width=30, height=20, font=("Arial", 11))
-        sma2_entry.pack(side="left", padx=(2,0))
-        # ---------------------
-        
-        self.plot_frame = customtkinter.CTkFrame(self); self.plot_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        customtkinter.CTkEntry(sma2_frame, textvariable=self.sma2_window_var, width=30, height=20, font=("Arial", 11)).pack(side="left", padx=(2,0))
+
+        self.main_content = customtkinter.CTkFrame(self, fg_color="transparent")
+        self.main_content.pack(fill="both", expand=True, padx=10, pady=10)
+        self.plot_frame = customtkinter.CTkFrame(self.main_content)
+        self.plot_frame.pack(side="left", fill="both", expand=True)
+        self.legend_frame = customtkinter.CTkScrollableFrame(self.main_content, width=150, label_text="Sensitivities")
+        self.legend_frame.pack(side="right", fill="y", padx=(10, 0))
+        self.legend_frame.pack_forget() 
+
         self.fig, self.canvas, self.toolbar = None, None, None
+        self.artists_by_sens = {} 
         self.on_view_mode_change()
+
+    def _on_min_runs_change(self, event=None):
+        try:
+            val = int(self.min_runs_var.get())
+            self.app_master.min_runs_global[self.graph_context] = val
+            self.app_master.save_user_data()
+            self.redraw_plot()
+        except ValueError: pass
 
     def on_close(self):
         self.app_master.deregister_graph_window(self)
@@ -648,22 +689,50 @@ class GraphWindow(customtkinter.CTkToplevel):
         self.hide_settings["raw_display_mode"] = self.raw_display_mode_var.get()
         self.hide_settings["connect_sessions"] = self.connect_sessions_var.get()
         self.hide_settings["four_color_cycle"] = self.four_color_cycle_var.get()
+        self.hide_settings["graph_color_mode"] = self.color_by_var.get()
+        self.hide_settings["group_n_size"] = self.group_size_var.get()
+        
         self.save_callback()
-        self.redraw_plot()
+        self.on_view_mode_change()
 
     def on_view_mode_change(self, choice=None):
+        label = self.aggregation_var.get()
+        code = self.view_key_map.get(label, "raw")
+        
+        self.hide_settings["view_mode"] = code
+        self.save_callback()
+        
         hide_key = self.get_current_hide_key()
         current_hide_value = self.hide_settings.get(hide_key, 5)
         self.hide_below_var.set(str(current_hide_value))
         
-        if self.aggregation_var.get() == "Raw Data":
+        # Hide everything first
+        self.raw_display_menu.pack_forget()
+        self.color_by_switch.pack_forget()
+        self.connect_sessions_switch.pack_forget()
+        self.four_color_cycle_switch.pack_forget()
+        self.group_size_label.pack_forget()
+        self.group_size_entry.pack_forget()
+        self.min_runs_label.pack_forget()
+        self.min_runs_entry.pack_forget()
+
+        if code == "raw":
             self.raw_display_menu.pack(side="left", padx=5, pady=5)
+            self.color_by_switch.pack(side="left", padx=10, pady=5) 
             self.connect_sessions_switch.pack(side="left", padx=10, pady=5)
-            self.four_color_cycle_switch.pack(side="left", padx=10, pady=5)
+            
+            if self.color_by_var.get() == "Session":
+                self.four_color_cycle_switch.pack(side="left", padx=10, pady=5)
+                
+        elif code == "grouped":
+            # Grouped Mode: Show Group Size ONLY (No Min Runs)
+            self.group_size_label.pack(side="left", padx=(10, 2), pady=5)
+            self.group_size_entry.pack(side="left", padx=(0, 5), pady=5)
+            
         else:
-            self.raw_display_menu.pack_forget()
-            self.connect_sessions_switch.pack_forget()
-            self.four_color_cycle_switch.pack_forget()
+            # Aggregated Modes (Daily/Session/etc): Show Min Runs
+            self.min_runs_label.pack(side="left", padx=(10, 2), pady=5)
+            self.min_runs_entry.pack(side="left", padx=(0, 5), pady=5)
 
         self.redraw_plot()
 
@@ -686,36 +755,106 @@ class GraphWindow(customtkinter.CTkToplevel):
             hide_below_score = float(self.hide_settings.get(hide_key, 5))
         except (ValueError, TypeError): 
             hide_below_score = 5.0
+            
+        # Get Min Runs threshold
+        try: min_runs = int(self.min_runs_var.get())
+        except: min_runs = 1
         
-        self.visible_data = self.full_data[self.full_data['Score'] >= hide_below_score].copy()
+        label = self.aggregation_var.get()
+        code = self.view_key_map.get(label, "raw")
+
+        if code == "raw":
+            self.visible_data = self.full_data[self.full_data['Score'] >= hide_below_score].copy()
+        else:
+            self.visible_data = self.full_data.copy()
 
         plt.style.use('dark_background' if customtkinter.get_appearance_mode() == "Dark" else 'seaborn-v0_8-whitegrid')
         self.fig = Figure(figsize=(8, 5), dpi=100)
         ax = self.fig.add_subplot(111)
         
-        mode = self.aggregation_var.get()
-        
         if not self.visible_data.empty:
             mean_val = self.visible_data['Score'].mean()
             p75_val = self.visible_data['Score'].quantile(0.75)
-            
             ax.axhline(mean_val, color='gray', linestyle='--', linewidth=1, label=f'Avg ({mean_val:.0f})', alpha=0.7)
-            
             p75_color = '#66bb6a' if customtkinter.get_appearance_mode() == "Dark" else '#2e7d32'
             ax.axhline(p75_val, color=p75_color, linestyle='--', linewidth=1, label=f'75th ({p75_val:.0f})', alpha=0.8)
 
-        if mode == "Raw Data": self.draw_raw_data_plot(ax)
-        else: self.draw_aggregated_plot(ax, mode)
+        self.artists_by_sens = {}
+        
+        if code == "raw" and self.color_by_var.get() == "Sensitivity":
+            self.legend_frame.pack(side="right", fill="y", padx=(10, 0))
+        else:
+            self.legend_frame.pack_forget()
+
+        if code == "raw": 
+            self.draw_raw_data_plot(ax)
+        elif code == "grouped": 
+            self.draw_grouped_plot(ax, hide_below_score, min_runs)
+        else: 
+            self.draw_aggregated_plot(ax, code, hide_below_score, min_runs)
         
         ax.set_title(self.title_text, fontsize=16); ax.set_ylabel("Score", fontsize=12)
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
         
-        ax.legend(loc='best', fontsize='small', framealpha=0.5)
+        if not (code == "raw" and self.color_by_var.get() == "Sensitivity"):
+            ax.legend(loc='best', fontsize='small', framealpha=0.5)
 
         self.fig.tight_layout()
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame); self.canvas.draw()
         self.canvas.get_tk_widget().pack(side=tkinter.TOP, fill=tkinter.BOTH, expand=True)
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.plot_frame); self.toolbar.update()
+        
+        if code == "raw" and self.color_by_var.get() == "Sensitivity":
+            self.populate_legend_panel()
+
+    def draw_grouped_plot(self, ax, threshold, min_runs):
+        plot_data = self.visible_data.copy()
+        if plot_data.empty: return
+
+        try: n = int(self.group_size_var.get())
+        except: n = 5
+        if n < 1: n = 1
+
+        plot_data.sort_values(by='Timestamp', inplace=True)
+        plot_data.reset_index(drop=True, inplace=True)
+
+        plot_data['group_id'] = plot_data.index // n
+        
+        agg_data = plot_data.groupby('group_id').agg({
+            'Score': 'mean',
+            'Timestamp': 'mean' 
+        }).reset_index()
+        
+        # FILTER: Score Threshold ONLY (Ignore Min Runs)
+        agg_data = agg_data[agg_data['Score'] >= threshold]
+        
+        if agg_data.empty: return
+
+        line_color = '#66BB6A' 
+
+        ax.plot(agg_data['group_id'], agg_data['Score'], color=line_color, marker='o', markersize=5, linestyle='-', linewidth=1.5, alpha=0.9, label=f"Group Avg (N={n})")
+        
+        ax.set_xlabel(f"Group Number (N={n})", fontsize=12)
+        
+        if self.show_trend_var.get():
+            cumulative_avg = agg_data['Score'].expanding().mean()
+            ax.plot(agg_data['group_id'], cumulative_avg, color='#FF9800', linestyle='-', linewidth=2.5, alpha=0.95, label="Career Trend", zorder=5)
+
+        if self.show_sma_var.get():
+            try: w = int(self.sma_window_var.get())
+            except: w = 20
+            sma = agg_data['Score'].rolling(window=w).mean()
+            ax.plot(agg_data['group_id'], sma, color='white', linestyle='-', linewidth=2.5, alpha=0.95, label=f"SMA ({w})", zorder=5)
+
+        if self.show_sma2_var.get():
+            try: w = int(self.sma2_window_var.get())
+            except: w = 10
+            sma2 = agg_data['Score'].rolling(window=w).mean()
+            ax.plot(agg_data['group_id'], sma2, color='#00E5FF', linestyle='-', linewidth=2.5, alpha=0.95, label=f"SMA ({w})", zorder=5)
+            
+        min_score, max_score = agg_data['Score'].min(), agg_data['Score'].max()
+        padding = (max_score - min_score) * 0.05 if max_score > min_score else 10
+        ax.set_ylim(min_score - padding, max_score + padding)
 
     def draw_raw_data_plot(self, ax):
         ax.set_xlabel("Run Number", fontsize=12)
@@ -727,90 +866,135 @@ class GraphWindow(customtkinter.CTkToplevel):
         
         display_mode = self.raw_display_mode_var.get()
         connect_sessions = self.connect_sessions_var.get() == "On"
-        use_4_color_cycle = self.four_color_cycle_var.get() == "On"
-
-        four_colors = ['#1f77b4', '#ff7f0e', '#2ca0c2', '#d62728']
-        rainbow_colors = itertools.cycle(['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f0f', '#bcbd22', '#17becf'])
-        unique_sessions = sorted(plot_data['SessionID'].unique())
+        color_mode = self.color_by_var.get()
         
-        session_colors = {}
-        for i, sid in enumerate(unique_sessions):
-            session_colors[sid] = four_colors[i % 4] if use_4_color_cycle else next(rainbow_colors)
+        self.backbone_artists = []
 
-        last_point = None
-        for session_id in unique_sessions:
-            group = plot_data[plot_data['SessionID'] == session_id]
-            if group.empty: continue
-            color = session_colors[session_id]
+        # --- MODE A: COLOR BY SESSION ---
+        if color_mode == "Session":
+            use_4_color_cycle = self.four_color_cycle_var.get() == "On"
+            four_colors = ['#1f77b4', '#ff7f0e', '#2ca0c2', '#d62728']
+            rainbow_colors = itertools.cycle(['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f0f', '#bcbd22', '#17becf'])
+            unique_sessions = sorted(plot_data['SessionID'].unique())
             
-            plot_x, plot_y = group.index, group['Score']
-            
-            if connect_sessions and last_point is not None:
-                plot_x = pd.Index([last_point[0]]).append(plot_x)
-                plot_y = pd.concat([pd.Series([last_point[1]]), plot_y], ignore_index=True)
+            session_colors = {}
+            for i, sid in enumerate(unique_sessions):
+                session_colors[sid] = four_colors[i % 4] if use_4_color_cycle else next(rainbow_colors)
 
-            if display_mode == "Line Plot":
-                ax.plot(plot_x, plot_y, color=color, alpha=0.7, zorder=2)
-                ax.scatter(group.index, group['Score'], color=color, s=20, zorder=3)
-            elif display_mode == "Dots Only":
-                ax.scatter(group.index, group['Score'], color=color, s=20, zorder=3)
-            elif display_mode == "Filled Area":
-                ax.plot(plot_x, plot_y, color=color, alpha=0.8, zorder=2)
-                ax.fill_between(plot_x, plot_y, color=color, alpha=0.3, zorder=1)
-                ax.scatter(group.index, group['Score'], color=color, s=20, zorder=3)
-            
-            last_point = (group.index[-1], group['Score'].iloc[-1])
+            last_point = None
+            for session_id in unique_sessions:
+                group = plot_data[plot_data['SessionID'] == session_id]
+                if group.empty: continue
+                color = session_colors[session_id]
+                
+                plot_x, plot_y = group.index, group['Score']
+                
+                if connect_sessions and last_point is not None:
+                    plot_x = pd.Index([last_point[0]]).append(plot_x)
+                    plot_y = pd.concat([pd.Series([last_point[1]]), plot_y], ignore_index=True)
 
-        # --- TREND LINES (Draw ON TOP) ---
-        
-        # 1. Career Trend (Orange)
+                if display_mode == "Line Plot":
+                    ax.plot(plot_x, plot_y, color=color, alpha=0.7, zorder=2)
+                    ax.scatter(group.index, group['Score'], color=color, s=20, zorder=3)
+                elif display_mode == "Dots Only":
+                    ax.scatter(group.index, group['Score'], color=color, s=20, zorder=3)
+                elif display_mode == "Filled Area":
+                    ax.plot(plot_x, plot_y, color=color, alpha=0.8, zorder=2)
+                    ax.fill_between(plot_x, plot_y, color=color, alpha=0.3, zorder=1)
+                    ax.scatter(group.index, group['Score'], color=color, s=20, zorder=3)
+                
+                last_point = (group.index[-1], group['Score'].iloc[-1])
+
+        # --- MODE B: COLOR BY SENSITIVITY ---
+        else:
+            # 1. Draw Backbone (Z=1)
+            if display_mode in ["Line Plot", "Filled Area"]:
+                backbone_color = "white" if customtkinter.get_appearance_mode() == "Dark" else "gray"
+                backbone_alpha = 0.4
+                
+                if connect_sessions:
+                    line, = ax.plot(plot_data.index, plot_data['Score'], color=backbone_color, alpha=backbone_alpha, linewidth=1.0, zorder=1)
+                    self.backbone_artists.append(line)
+                else:
+                    for session_id in plot_data['SessionID'].unique():
+                        s_group = plot_data[plot_data['SessionID'] == session_id]
+                        line, = ax.plot(s_group.index, s_group['Score'], color=backbone_color, alpha=backbone_alpha, linewidth=1.0, zorder=1)
+                        self.backbone_artists.append(line)
+
+            # 2. Draw Groups
+            unique_sens = sorted(plot_data['Sens'].unique())
+            import matplotlib.cm as cm
+            cmap = cm.get_cmap('plasma') 
+            
+            for s_val in unique_sens:
+                is_visible = s_val in self.visible_sensitivities
+                
+                if not is_visible:
+                    color = "#444444" 
+                    alpha = 0.4
+                else:
+                    idx = unique_sens.index(s_val)
+                    if len(unique_sens) > 1: norm_val = idx / (len(unique_sens) - 1)
+                    else: norm_val = 0.5
+                    color = cmap(norm_val)
+                    alpha = 0.9
+
+                group = plot_data[plot_data['Sens'] == s_val]
+                artists = []
+                
+                # A. Ghost Line (Z=2)
+                ghost_line, = ax.plot(group.index, group['Score'], color=color, alpha=0.0, linewidth=2.0, zorder=2)
+                artists.append(ghost_line)
+
+                # B. Dots (Z=3)
+                scatter = ax.scatter(group.index, group['Score'], color=color, s=25, zorder=3, picker=5, edgecolors='none', alpha=alpha)
+                artists.append(scatter)
+                
+                self.artists_by_sens[s_val] = {'color': color, 'artists': artists, 'visible': is_visible}
+
+        # --- TREND LINES (Z=5) ---
         if self.show_trend_var.get():
             cumulative_avg = plot_data['Score'].expanding().mean()
             ax.plot(plot_data.index, cumulative_avg, color='#FF9800', linestyle='-', linewidth=2.5, alpha=0.95, label="Career Trend", zorder=5)
 
-        # 2. SMA 1 (White)
         if self.show_sma_var.get():
-            try:
-                w = int(self.sma_window_var.get())
-                if w < 1: w = 20
-            except ValueError: w = 20
-            
+            try: w = int(self.sma_window_var.get())
+            except: w = 20
             sma = plot_data['Score'].rolling(window=w).mean()
             ax.plot(plot_data.index, sma, color='white', linestyle='-', linewidth=2.5, alpha=0.95, label=f"SMA ({w})", zorder=5)
 
-        # 3. SMA 2 (Cyan)
         if self.show_sma2_var.get():
-            try:
-                w2 = int(self.sma2_window_var.get())
-                if w2 < 1: w2 = 10
-            except ValueError: w2 = 10
-            
-            sma2 = plot_data['Score'].rolling(window=w2).mean()
-            ax.plot(plot_data.index, sma2, color='#00E5FF', linestyle='-', linewidth=2.5, alpha=0.95, label=f"SMA ({w2})", zorder=5)
+            try: w = int(self.sma2_window_var.get())
+            except: w = 10
+            sma2 = plot_data['Score'].rolling(window=w).mean()
+            ax.plot(plot_data.index, sma2, color='#00E5FF', linestyle='-', linewidth=2.5, alpha=0.95, label=f"SMA ({w})", zorder=5)
         
-        # ---------------------------------
-
+        # Limits and Ticks
         min_score, max_score = plot_data['Score'].min(), plot_data['Score'].max()
         padding = (max_score - min_score) * 0.05 if max_score > min_score else 10
         ax.set_ylim(min_score - padding, max_score + padding)
         ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
 
-        ax2 = ax.twiny()
-        ax2.set_xlim(ax.get_xlim())
+        ax2 = ax.twiny(); ax2.set_xlim(ax.get_xlim())
         date_ticks, date_labels, last_tick_pos = [], [], -np.inf
         min_dist = len(plot_data) * 0.05 
         for i, row in plot_data.iterrows():
             if i - last_tick_pos > min_dist:
-                date_ticks.append(i)
-                date_labels.append(row['Timestamp'].strftime('%b %d'))
-                last_tick_pos = i
+                date_ticks.append(i); date_labels.append(row['Timestamp'].strftime('%b %d')); last_tick_pos = i
         ax2.set_xticks(date_ticks); ax2.set_xticklabels(date_labels, rotation=30, ha='left', fontsize=8)
-        ax2.tick_params(axis='x', which='both', length=0)
-        ax2.spines['top'].set_visible(False)
+        ax2.tick_params(axis='x', which='both', length=0); ax2.spines['top'].set_visible(False)
 
-    def draw_aggregated_plot(self, ax, mode):
-        period_map = {"Daily Average": "D", "Weekly Average": "W", "Monthly Average": "M", "Session Average": "Session"}
+
+    def draw_aggregated_plot(self, ax, mode, threshold, min_runs):
+        period_map = {"daily": "D", "weekly": "W", "monthly": "M", "session": "Session"}
+        
+        if mode not in period_map: return
+
         agg_data = engine.aggregate_data(self.visible_data, period=period_map[mode])
+        
+        # FILTER: Score Threshold AND Min Runs
+        # Logic: Hide if Count <= min_runs
+        agg_data = agg_data[(agg_data['Score'] >= threshold) & (agg_data['Count'] > min_runs)]
         
         if period_map[mode] == "Session":
             agg_data['id'] = agg_data['SessionID'].astype(str)
@@ -822,15 +1006,11 @@ class GraphWindow(customtkinter.CTkToplevel):
         plot_data = agg_data
         if plot_data.empty: return
 
-        line_color = '#2ca0c2' 
+        line_color = '#66BB6A' 
         
-        min_score, max_score = plot_data['Score'].min(), plot_data['Score'].max()
-        padding = (max_score - min_score) * 0.05 if max_score > min_score else 10
-        ax.set_ylim(min_score - padding, max_score + padding)
-
         if period_map[mode] == "Session":
             x_vals = np.arange(len(plot_data))
-            ax.plot(x_vals, plot_data['Score'], color=line_color, marker='o', markersize=4, linestyle='-', alpha=0.8)
+            ax.plot(x_vals, plot_data['Score'], color=line_color, marker='o', markersize=4, linestyle='-', alpha=0.8, label="Score")
             ax.fill_between(x_vals, plot_data['Score'], color=line_color, alpha=0.2)
             
             ax.set_xlabel("Session", fontsize=12)
@@ -841,18 +1021,143 @@ class GraphWindow(customtkinter.CTkToplevel):
                 ax.set_xticklabels([f"S{int(sid)}" for sid in plot_data['SessionID']][::n], rotation=45, ha='right')
             else:
                 ax.set_xticklabels([f"S{int(sid)}" for sid in plot_data['SessionID']], rotation=45, ha='right')
+            
+            trend_x_axis = x_vals
+            
         else:
-            ax.plot(plot_data['Timestamp'], plot_data['Score'], color=line_color, marker='o', markersize=4, linestyle='-', alpha=0.8)
+            ax.plot(plot_data['Timestamp'], plot_data['Score'], color=line_color, marker='o', markersize=4, linestyle='-', alpha=0.8, label="Score")
             ax.fill_between(plot_data['Timestamp'], plot_data['Score'], color=line_color, alpha=0.2)
             
             ax.set_xlabel("Date", fontsize=12)
             self.fig.autofmt_xdate()
+            trend_x_axis = plot_data['Timestamp']
+
+        if self.show_trend_var.get():
+            cumulative_avg = plot_data['Score'].expanding().mean()
+            ax.plot(trend_x_axis, cumulative_avg, color='#FF9800', linestyle='-', linewidth=2.5, alpha=0.95, label="Career Trend", zorder=5)
+
+        if self.show_sma_var.get():
+            try: w = int(self.sma_window_var.get())
+            except: w = 20
+            sma = plot_data['Score'].rolling(window=w).mean()
+            ax.plot(trend_x_axis, sma, color='white', linestyle='-', linewidth=2.5, alpha=0.95, label=f"SMA ({w})", zorder=5)
+
+        if self.show_sma2_var.get():
+            try: w = int(self.sma2_window_var.get())
+            except: w = 10
+            sma2 = plot_data['Score'].rolling(window=w).mean()
+            ax.plot(trend_x_axis, sma2, color='#00E5FF', linestyle='-', linewidth=2.5, alpha=0.95, label=f"SMA ({w})", zorder=5)
+
+        min_score, max_score = plot_data['Score'].min(), plot_data['Score'].max()
+        padding = (max_score - min_score) * 0.05 if max_score > min_score else 10
+        ax.set_ylim(min_score - padding, max_score + padding)
         
     def get_bar_width(self, period):
         if period == 'D': return 0.8
         if period == 'W': return 5
         if period == 'M': return 20
         return 1
+    
+    def populate_legend_panel(self):
+        # Clear existing
+        for w in self.legend_frame.winfo_children(): w.destroy()
+        
+        # Sort sensitivities
+        sens_list = sorted(self.artists_by_sens.keys())
+        std_text_color = "white" if customtkinter.get_appearance_mode() == "Dark" else "black"
+        
+        for s_val in sens_list:
+            data = self.artists_by_sens[s_val]
+            is_visible = data['visible']
+            
+            # Skip hidden/gray items in the legend
+            if not is_visible: continue
+            
+            color = data['color']
+            import matplotlib.colors as mcolors
+            hex_color = mcolors.to_hex(color)
+            
+            row = customtkinter.CTkFrame(self.legend_frame, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            
+            # Color indicator
+            indicator = customtkinter.CTkFrame(row, width=15, height=15, fg_color=hex_color, corner_radius=3)
+            indicator.pack(side="left", padx=(0,5))
+            
+            # Text Label
+            label_text = f"{s_val}cm"
+            lbl = customtkinter.CTkLabel(row, text=label_text, text_color=std_text_color, font=("Arial", 11))
+            lbl.pack(side="left")
+            
+            # Bind Events
+            def on_enter(e, s=s_val): self.highlight_sensitivity(s)
+            def on_leave(e): self.reset_highlights()
+            
+            row.bind("<Enter>", on_enter); row.bind("<Leave>", on_leave)
+            lbl.bind("<Enter>", on_enter); lbl.bind("<Leave>", on_leave)
+            indicator.bind("<Enter>", on_enter); indicator.bind("<Leave>", on_leave)
+
+
+    def highlight_sensitivity(self, target_sens):
+        if not self.canvas: return
+        
+        # 1. Dim Backbone (Context)
+        if hasattr(self, 'backbone_artists'):
+            for art in self.backbone_artists:
+                art.set_alpha(0.3) 
+        
+        for s_val, data in self.artists_by_sens.items():
+            artists = data['artists']
+            
+            if s_val == target_sens:
+                # HIGHLIGHT TARGET
+                for art in artists:
+                    if hasattr(art, 'set_linestyle'): 
+                        # Ghost Line
+                        art.set_alpha(1.0) 
+                        art.set_linewidth(2.5)
+                    elif hasattr(art, 'set_sizes'): 
+                        # Scatter
+                        art.set_alpha(1.0)
+                        art.set_sizes([80] * len(art.get_offsets())) 
+            else:
+                # DIM OTHERS
+                for art in artists:
+                    if hasattr(art, 'set_linestyle'): 
+                        # Ghost Line (Hide)
+                        art.set_alpha(0.0) 
+                    elif hasattr(art, 'set_sizes'): 
+                        # Scatter (Fade but visible)
+                        art.set_alpha(0.6) 
+                        art.set_sizes([20] * len(art.get_offsets()))
+                        
+        self.canvas.draw_idle()
+
+    def reset_highlights(self):
+        if not self.canvas: return
+        
+        # 1. Restore Backbone
+        if hasattr(self, 'backbone_artists'):
+            for art in self.backbone_artists:
+                art.set_alpha(0.4) 
+        
+        for s_val, data in self.artists_by_sens.items():
+            artists = data['artists']
+            is_visible = data['visible']
+            
+            # Default alpha
+            base_alpha = 0.9 if is_visible else 0.4
+            
+            for art in artists:
+                if hasattr(art, 'set_linestyle'): 
+                    # Hide Ghost Lines
+                    art.set_alpha(0.0) 
+                elif hasattr(art, 'set_sizes'): 
+                    # Restore Scatter
+                    art.set_alpha(base_alpha)
+                    art.set_sizes([25] * len(art.get_offsets()))
+                
+        self.canvas.draw_idle()
     
     def _schedule_refresh(self, *args):
         if hasattr(self, '_refresh_job') and self._refresh_job:

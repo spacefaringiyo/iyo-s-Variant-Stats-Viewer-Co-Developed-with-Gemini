@@ -18,7 +18,7 @@ import engine
 
 import windows
 import utils
-import locales # --- NEW: Import Locales ---
+import locales 
 
 customtkinter.set_default_color_theme("blue")
 
@@ -201,6 +201,7 @@ class App(customtkinter.CTk):
                 
                 self.graph_grid_show_sma2_var.set(data.get("graph_grid_show_sma2", False))
                 self.graph_grid_sma2_window_var.set(str(data.get("graph_grid_sma2_window", "10")))
+                self.min_runs_global = data.get("min_runs_global", {"scenario": 1, "sens": 1})
 
                 self.saved_stats_path = data.get("stats_path", None)
 
@@ -208,6 +209,7 @@ class App(customtkinter.CTk):
             except (json.JSONDecodeError, AttributeError): 
                 self.favorites,self.recents,self.collapsed_states,self.target_scores_by_scenario,self.format_filter_preferences = [],[],{},{},{}
                 self.hidden_scenarios,self.hidden_cms_by_scenario,self.graph_hide_settings = set(),{},{}
+                self.min_runs_global = {"scenario": 1, "sens": 1}
     
     def save_user_data(self):
         current_scenario = self.scenario_search_var.get()
@@ -266,6 +268,7 @@ class App(customtkinter.CTk):
             "graph_grid_sma_window": self.graph_grid_sma_window_var.get(),
             "graph_grid_show_sma2": self.graph_grid_show_sma2_var.get(),
             "graph_grid_sma2_window": self.graph_grid_sma2_window_var.get(),
+            "min_runs_global": getattr(self, "min_runs_global", {"scenario": 1, "sens": 1}),
             "stats_path": self.path_entry.get(),
         }
         with open(USER_DATA_FILE, 'w') as f: json.dump(data_to_save, f, indent=2)
@@ -311,7 +314,9 @@ class App(customtkinter.CTk):
         history_data['unique_id'] = history_data.apply(lambda row: f"{row['Timestamp'].isoformat()}|{row['Score']}", axis=1)
         # Localized Title
         title = f"History: {scenario_name} at {sensitivity}cm" # Keeping simple for now, or could localize "History"
-        windows.GraphWindow(self, full_data=history_data, hide_settings=hide_settings_for_graph, save_callback=self.save_user_data, graph_id=graph_id, title=title)
+        windows.GraphWindow(self, full_data=history_data, hide_settings=hide_settings_for_graph, 
+                            save_callback=self.save_user_data, graph_id=graph_id, title=title,
+                            graph_context="sens")
         
     def on_scenario_name_click(self, event, scenario_name):
         if self.all_runs_df is None or self.all_runs_df.empty: return
@@ -328,7 +333,29 @@ class App(customtkinter.CTk):
             
         history_data['unique_id'] = history_data.apply(lambda row: f"{row['Timestamp'].isoformat()}|{row['Score']}", axis=1)
         title = f"History: {scenario_name} (All Sensitivities)"
-        windows.GraphWindow(self, full_data=history_data, hide_settings=hide_settings_for_graph, save_callback=self.save_user_data, graph_id=graph_id, title=title)
+        
+        # --- NEW: Determine visible sensitivities from the current grid ---
+        visible_sens = []
+        if self.results_table:
+            # We iterate grid headers (row 0) to find what is currently shown
+            # This respects hidden columns and filter modes automatically
+            try:
+                headers = self.results_table.values[0]
+                for h in headers:
+                    # Header format is usually "43.3cm"
+                    if "cm" in h:
+                        try:
+                            val = float(h.replace("cm", ""))
+                            visible_sens.append(val)
+                        except ValueError: pass
+            except Exception:
+                pass
+        
+        # Pass this list to GraphWindow
+        windows.GraphWindow(self, full_data=history_data, hide_settings=hide_settings_for_graph, 
+                           save_callback=self.save_user_data, graph_id=graph_id, title=title,
+                           visible_sensitivities=visible_sens,
+                           graph_context="scenario") # Context: Scenario (All Sens)
         
     def _build_path_and_load_controls(self):
         self.path_frame = customtkinter.CTkFrame(self.top_frame); self.path_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10,0)); self.path_frame.grid_columnconfigure(1, weight=1)
@@ -1228,7 +1255,15 @@ class App(customtkinter.CTk):
                 # Localized Tooltips
                 text_lines = [f"{scen_name}", locales.get_text(self.current_language, "tooltip_sens", val=sens_display), "-" * 30]
                 pb_date_str = stats['pb_date'].strftime('%Y-%m-%d')
-                text_lines.append(locales.get_text(self.current_language, "tooltip_pb", val=f"{stats['max']:.1f}", date=pb_date_str))
+                pb_score_display = f"{stats['max']:.1f}"
+                if 'pb_sens' in stats and stats['pb_sens']:
+                    # Only show if meaningful (e.g. don't show "30cm" if the whole tooltip is already about 30cm column)
+                    # But user asked for it specifically, and it's most useful for the Scenario Row (ALL).
+                    # Let's show it always for clarity or just when sens_val is ALL.
+                    # User request: "I want also know which CM was used". 
+                    pb_score_display += f" ({stats['pb_sens']}cm)"
+
+                text_lines.append(locales.get_text(self.current_language, "tooltip_pb", val=pb_score_display, date=pb_date_str))
                 text_lines.append(locales.get_text(self.current_language, "tooltip_runs", val=f"{stats['count']}"))
                 if 'avg' in stats: 
                     text_lines.append(locales.get_text(self.current_language, "tooltip_avg", val=f"{stats['avg']:.1f} (±{stats.get('std', 0):.1f})"))
