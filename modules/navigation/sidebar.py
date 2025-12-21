@@ -55,15 +55,24 @@ class NavigationWidget(QWidget):
 
     def on_data_updated(self, df):
         if df is None: return
-        self.scenario_list = sorted(df['Scenario'].unique())
         
-        self.all_root.takeChildren()
-        for scen in self.scenario_list:
-            QTreeWidgetItem(self.all_root, [scen])
+        # 1. Get new list
+        new_scenarios = sorted(df['Scenario'].unique())
+        
+        # 2. Smart Diff: Only rebuild "All Scenarios" if the list actually changed
+        # We store self.scenario_list in the class (it was already there), so we compare against it.
+        if new_scenarios != self.scenario_list:
+            self.scenario_list = new_scenarios
             
+            self.all_root.takeChildren()
+            # Batch operations are faster, but QTreeWidget requires item-by-item adds usually.
+            # However, not doing this at all is infinite% faster.
+            for scen in self.scenario_list:
+                QTreeWidgetItem(self.all_root, [scen])
+        
+        # 3. Always update Recents (Fast and changes every run)
         self.recents_root.takeChildren()
         recent_df = df.sort_values('Timestamp', ascending=False)
-        # CHANGED: 10 -> 25
         recents = recent_df['Scenario'].drop_duplicates().head(25).tolist()
         for scen in recents:
             QTreeWidgetItem(self.recents_root, [scen])

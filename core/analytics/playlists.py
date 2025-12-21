@@ -65,7 +65,8 @@ def parse_playlist(json_path):
     Returns: List of Scenario Names (Strings).
     """
     try:
-        with open(json_path, 'r', encoding='utf-8') as f:
+        # Use utf-8-sig to handle BOM if present
+        with open(json_path, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
             
         scenarios = []
@@ -95,10 +96,16 @@ def get_active_playlist(playlists_folder_path):
         active_file = parent_dir / "PlaylistInProgress.json"
         
         if active_file.exists():
-            with open(active_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            # KEY FIX: Use 'utf-8-sig' to handle Byte Order Mark (BOM)
+            with open(active_file, 'r', encoding='utf-8-sig') as f:
+                content = f.read().strip()
+                if not content: return None, [] # Handle empty file check
+                data = json.loads(content)
                 
             name = data.get('playlistName', 'Unknown Playlist')
+            # Handle user's specific whitespace case just to be safe
+            name = name.strip() 
+            
             scenarios = []
             if 'scenarioList' in data:
                 for item in data['scenarioList']:
@@ -108,6 +115,8 @@ def get_active_playlist(playlists_folder_path):
             return name, scenarios
             
     except Exception as e:
-        print(f"Error reading active playlist: {e}")
+        # If it fails (e.g. file locked by KovaaKs), just return None silently-ish
+        # print(f"Debug - Active PL Error: {e}") 
+        pass
         
     return None, []

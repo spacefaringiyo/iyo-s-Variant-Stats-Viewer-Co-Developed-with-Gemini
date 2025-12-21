@@ -66,6 +66,11 @@ class SessionManager(QWidget):
         self.stack.addWidget(self.page_report)
         
         self.state_manager.session_selected.connect(self.go_to_report)
+
+        # --- Listen for data to trigger auto-jump ---
+        self.state_manager.data_updated.connect(self.on_data_updated)
+        self.is_first_load = True
+        # -------------------------------------------------
         
         layout.addWidget(self.stack)
         
@@ -92,3 +97,22 @@ class SessionManager(QWidget):
         self.stack.setCurrentWidget(self.page_list)
         self.btn_back.setVisible(False)
         self.lbl_title.setText("Session History")
+
+    def on_data_updated(self, df):
+        if df is None or df.empty: return
+        
+        # Only auto-jump on the very first load
+        if self.is_first_load:
+            self.is_first_load = False
+            try:
+                # Find the latest session
+                latest_id = df['SessionID'].max()
+                
+                # Emit the signal as if the user clicked it.
+                # This automatically:
+                # 1. Switches the Stack to the Report Page
+                # 2. Updates the Report Widget with data
+                # 3. Highlights the item in the History List
+                self.state_manager.session_selected.emit(int(latest_id))
+            except: 
+                pass

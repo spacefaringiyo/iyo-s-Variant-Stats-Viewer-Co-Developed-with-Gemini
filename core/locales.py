@@ -1,7 +1,7 @@
 # locales.py
 
 # --- CENTRAL VERSION CONTROL ---
-APP_VERSION = "v2.0.1 Alpha"
+APP_VERSION = "v2.1.0"
 # -------------------------------
 
 # Dictionary of all text used in the app

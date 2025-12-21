@@ -107,6 +107,8 @@ class DayDetailWidget(QWidget):
         if group_by_scen: grouped = self.day_df.groupby('Scenario')
         else: grouped = self.day_df.groupby(['Scenario', 'Sens'])
         day_start_ts = pd.Timestamp(self.current_date_str)
+
+        count_new_mode = self.config.get("calendar_count_new", default=False)
         
         # Load Comparison Mode
         comp_mode = self.config.get("calendar_compare_mode", default="Average")
@@ -210,8 +212,17 @@ class DayDetailWidget(QWidget):
                 gain_str = f"+{r['gain_pct']:.1f}%" if r['gain_pct'] > 0 else "-"
                 set_cell(4, "NEW!", "#4aa3df")
                 set_cell(5, "NEW!", "#4aa3df")
-                set_cell(6, "NEW!", "#4aa3df")
-                set_cell(7, gain_str, "#4aa3df" if r['gain_pct'] > 0 else None)
+                if count_new_mode and r['gain_pct'] > 0:
+                    # Show the Golden PB
+                    set_cell(6, f"PB {pb_icon}", "#FFD700")
+                    # Make the gain percentage Gold too
+                    set_cell(7, f"+{r['gain_pct']:.1f}%", "#FFD700")
+                else:
+                    # Standard Blue "NEW!"
+                    set_cell(6, "NEW!", "#4aa3df")
+                    # Standard Blue Gain (if any)
+                    gain_str = f"+{r['gain_pct']:.1f}%" if r['gain_pct'] > 0 else "-"
+                    set_cell(7, gain_str, "#4aa3df" if r['gain_pct'] > 0 else None)
             else:
                 if r['hist_avg'] > 0:
                     set_cell(4, f"{r['vs_avg_pct']:+.1f}%", "#4CAF50" if r['vs_avg_pct']>0 else "#EF5350")
@@ -240,6 +251,14 @@ class CalendarWidget(QWidget):
         self.current_date = QDate.currentDate(); self.selected_date = None; self.daily_stats = {} 
         self.setup_ui(); self.state_manager.data_updated.connect(self.on_data_updated)
         self.state_manager.request_date_jump.connect(self.on_date_jump_request)
+
+        self.needs_refresh = False
+
+    def showEvent(self, event):
+        if self.needs_refresh:
+            self.process_daily_stats(self.full_df)
+            self.needs_refresh = False
+        super().showEvent(event)
 
     def setup_ui(self):
         layout = QVBoxLayout(self); layout.setContentsMargins(10,10,10,10)
@@ -303,19 +322,20 @@ class CalendarWidget(QWidget):
         self.full_df = df
         if 'DateStr' not in df.columns: df['DateStr'] = df['Timestamp'].dt.strftime('%Y-%m-%d')
         
-        self.process_daily_stats(df)
-        
-        # Set initial date
-        if self.daily_stats:
-             # Default to last played date if not set
-            if not self.selected_date:
+        # --- NEW: Lazy Logic ---
+        self.needs_refresh = True
+        if self.isVisible():
+            self.process_daily_stats(df)
+            self.needs_refresh = False
+            
+            # Initial Date Setup (Only if we are actually processing)
+            if not self.selected_date and self.daily_stats:
                 max_date_str = max(self.daily_stats.keys())
                 self.selected_date = datetime.datetime.strptime(max_date_str, '%Y-%m-%d').date()
-            
-            target = self.selected_date
-            self.current_date = QDate(target.year, target.month, 1)
-            self.update_calendar()
-            self.refresh_details()
+                target = self.selected_date
+                self.current_date = QDate(target.year, target.month, 1)
+                self.update_calendar()
+                self.refresh_details()
 
     def process_daily_stats(self, df):
         """

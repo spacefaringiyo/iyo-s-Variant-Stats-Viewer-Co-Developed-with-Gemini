@@ -192,7 +192,18 @@ class SessionReportWidget(QWidget):
 
     def on_data_updated(self, df): 
         self.full_df = df
-        if self.current_session_id is not None:
+        
+        # --- Auto-load latest session if none selected ---
+        if self.full_df is not None and not self.full_df.empty:
+            # If we haven't selected a session yet (Startup), 
+            # OR if you prefer it to always jump to latest on Refresh:
+            if self.current_session_id is None:
+                latest_id = self.full_df['SessionID'].max()
+                self.on_session_selected(latest_id)
+        # ------------------------------------------------------
+
+        # If we already have a selection, just refresh data
+        elif self.current_session_id is not None:
             self.on_session_selected(self.current_session_id)
 
     def on_session_selected(self, session_id):

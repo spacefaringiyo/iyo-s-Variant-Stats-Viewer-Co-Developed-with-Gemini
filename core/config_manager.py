@@ -3,7 +3,7 @@ from pathlib import Path
 
 # --- THE TRUTH SOURCE ---
 DEFAULT_SETTINGS = {
-    "config_version": 2,
+    "config_version": 3,
     "global": {
         "stats_path": "",
         "playlist_path": "",

@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetIte
                              QHeaderView, QLabel, QFrame, QHBoxLayout, 
                              QAbstractItemView, QComboBox, QRadioButton, 
                              QCheckBox, QButtonGroup, QMenu, QDialog, QListWidget, QPushButton,
-                             QGridLayout, QToolTip)
+                             QGridLayout, QToolTip, QSpinBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QColor, QCursor
 import pandas as pd
@@ -97,6 +97,9 @@ class GridWidget(QWidget):
         self.active_agg = self.agg_strategies["Personal Best"]
         self.active_hl = self.hl_strategies["Row Heatmap"]
 
+        self.agg_values = {} 
+        self.hl_values = {}
+
         self.hidden_scenarios = set()
         self.hidden_cms = set()
 
@@ -147,8 +150,29 @@ class GridWidget(QWidget):
         self.sens_combo.addItems(["All", "2cm", "3cm", "5cm", "10cm"])
         self.sens_combo.currentIndexChanged.connect(self.on_control_changed)
         self.row3.layout().addWidget(self.sens_combo)
+        
+        # --- NEW LOCATION: Recent Controls (Between Sens & Mode) ---
+        self.row3.layout().addSpacing(20)
+        
+        self.chk_recent = QCheckBox("Recent Only")
+        self.chk_recent.toggled.connect(self.on_recent_toggled)
+        self.row3.layout().addWidget(self.chk_recent)
+
+        self.sb_recent_days = QSpinBox()
+        self.sb_recent_days.setRange(1, 3650)
+        self.sb_recent_days.setValue(7)
+        self.sb_recent_days.setVisible(False)
+        self.sb_recent_days.valueChanged.connect(self.on_control_changed)
+        self.row3.layout().addWidget(self.sb_recent_days)
+
+        self.lbl_recent_days = QLabel("Days")
+        self.lbl_recent_days.setVisible(False)
+        self.row3.layout().addWidget(self.lbl_recent_days)
+        # -----------------------------------------------------------
+        
         self.row3.layout().addSpacing(20)
         self.row3.layout().addWidget(QLabel("Mode:"))
+        
         self.mode_group = QButtonGroup(self)
         self.mode_group.buttonClicked.connect(self.on_mode_changed)
         for mode_cls in strategies.AGGREGATION_MODES:
@@ -156,9 +180,11 @@ class GridWidget(QWidget):
             self.row3.layout().addWidget(btn)
             self.mode_group.addButton(btn)
             if mode_cls.name == "Personal Best": btn.setChecked(True)
+            
         self.agg_setting_container = QHBoxLayout()
         self.row3.layout().addLayout(self.agg_setting_container)
-        self.row3.layout().addStretch()
+
+        self.row3.layout().addStretch() 
         layout.addWidget(self.row3)
 
         # Row 4
@@ -206,6 +232,21 @@ class GridWidget(QWidget):
         layout.addWidget(self.grid)
         self.update_strategy_widgets()
 
+    def on_recent_toggled(self, checked):
+        # Toggle both the box and the label
+        self.sb_recent_days.setVisible(checked)
+        self.lbl_recent_days.setVisible(checked)
+        self.on_control_changed()
+
+    def showEvent(self, event):
+        """
+        Called when this tab becomes visible.
+        Checks if data is stale and triggers a reload if needed.
+        """
+        if self.needs_refresh:
+            self.reload_data()
+        super().showEvent(event)
+
     def create_toolbar_row(self, label_text):
         frame = QFrame()
         frame.setObjectName("Panel")
@@ -215,9 +256,47 @@ class GridWidget(QWidget):
         lay.addWidget(QLabel(label_text))
         return frame
 
+    def reload_data(self):
+        """
+        Re-slices the data from all_runs_df based on the current mode (Family/Playlist)
+        and refreshes the grid. Resets the stale flag.
+        """
+        if not self.base_name or self.all_runs_df is None: 
+            return
+
+        if not self.is_playlist_mode:
+            # Family Mode: We need to re-fetch the family grouping logic 
+            # to include any new runs that match the pattern.
+            family_df = parsers.get_scenario_family_info(self.all_runs_df, self.base_name)
+            
+            if family_df is None or family_df.empty:
+                # Fallback: exact match (if no variants found)
+                family_df = self.all_runs_df[self.all_runs_df['Scenario'] == self.base_name].copy()
+                family_df['Modifiers'] = [{}] * len(family_df)
+            
+            self.current_family_df = family_df
+            
+            # Note: We don't re-run _setup_axes_for_family() here to prevent 
+            # jarring UI resets (e.g., if you were filtering by a specific axis).
+            # If new axes appear, they will show up on the next full tab reload.
+
+        # Playlist Mode doesn't need re-slicing here because refresh_grid_view 
+        # pulls directly from self.all_runs_df using self.playlist_scenarios.
+
+        self.refresh_grid_view()
+        self.needs_refresh = False
+
+
     def leaveEvent(self, event): self.tooltip.hide(); super().leaveEvent(event)
     def focusOutEvent(self, event): self.tooltip.hide(); super().focusOutEvent(event)
-    def on_data_updated(self, df): self.all_runs_df = df
+    
+    def on_data_updated(self, df):
+        self.all_runs_df = df
+        self.needs_refresh = True
+        
+        # Only process immediately if the user is looking at this tab
+        if self.isVisible():
+            self.reload_data()
 
     # --- ENTRY POINT 1: FAMILY VIEW ---
     def on_scenario_selected(self, scenario_name):
@@ -325,6 +404,15 @@ class GridWidget(QWidget):
         self.on_control_changed()
 
     def on_control_changed(self):
+        # Save current widget values to cache
+        if self.agg_setting_widget:
+            val = self.active_agg.get_setting_value(self.agg_setting_widget)
+            self.agg_values[self.active_agg.name] = val
+            
+        if self.hl_setting_widget:
+            val = self.active_hl.get_setting_value(self.hl_setting_widget)
+            self.hl_values[self.active_hl.name] = val
+
         if not self.is_loading_state: self.save_view_settings()
         self.refresh_grid_view()
 
@@ -334,25 +422,45 @@ class GridWidget(QWidget):
                 item = layout.takeAt(0)
                 if item.widget(): item.widget().deleteLater()
         
+        # 1. Aggregation Widget
         self.agg_setting_widget = self.active_agg.get_setting_widget()
         if self.agg_setting_widget:
-            if hasattr(self.agg_setting_widget, 'valueChanged'):
-                self.agg_setting_widget.valueChanged.connect(self.on_control_changed)
+            # Bind change event
+            widget_to_bind = self.agg_setting_widget
+            if hasattr(widget_to_bind, 'spin'): widget_to_bind = widget_to_bind.spin
+            if hasattr(widget_to_bind, 'valueChanged'):
+                widget_to_bind.valueChanged.connect(self.on_control_changed)
+            
             self.agg_setting_container.addWidget(self.agg_setting_widget)
+            
+            # Restore cached value if exists
+            if self.active_agg.name in self.agg_values:
+                val = self.agg_values[self.active_agg.name]
+                self.active_agg.set_setting_value(self.agg_setting_widget, val)
 
+        # 2. Highlight Widget
         self.hl_setting_widget = self.active_hl.get_setting_widget()
         if self.hl_setting_widget:
             widget_to_bind = self.hl_setting_widget
             if hasattr(widget_to_bind, 'spin'): widget_to_bind = widget_to_bind.spin
             if hasattr(widget_to_bind, 'valueChanged'):
                 widget_to_bind.valueChanged.connect(self.on_control_changed)
+            
             self.hl_setting_container.addWidget(self.hl_setting_widget)
+
+            # Restore cached value if exists
+            if self.active_hl.name in self.hl_values:
+                val = self.hl_values[self.active_hl.name]
+                self.active_hl.set_setting_value(self.hl_setting_widget, val)
 
     def load_view_settings(self):
         settings = self.config_manager.get("grid_view", scenario=self.base_name, default={})
         self.hidden_scenarios = set(settings.get("hidden_scenarios", []))
         self.hidden_cms = set(settings.get("hidden_cms", []))
         self.axis_filter_cache = settings.get("axis_filters", {})
+
+        self.agg_values = settings.get("agg_values", {})
+        self.hl_values = settings.get("hl_values", {})
 
         if not settings: return
 
@@ -369,6 +477,14 @@ class GridWidget(QWidget):
             if pat in saved_patterns: chk.setChecked(False)
 
         if "sens_step" in settings: self.sens_combo.setCurrentText(settings["sens_step"])
+
+        if "recent_only" in settings:
+            is_checked = settings["recent_only"]
+            self.chk_recent.setChecked(is_checked)
+            self.on_recent_toggled(is_checked)
+        
+        if "recent_days" in settings:
+            self.sb_recent_days.setValue(settings["recent_days"])
 
         if "mode" in settings:
             for btn in self.mode_group.buttons():
@@ -402,7 +518,11 @@ class GridWidget(QWidget):
             "sens_step": self.sens_combo.currentText(),
             "hidden_scenarios": list(self.hidden_scenarios),
             "hidden_cms": list(self.hidden_cms),
-            "axis_filters": self.axis_filter_cache
+            "axis_filters": self.axis_filter_cache,
+            "recent_only": self.chk_recent.isChecked(),
+            "recent_days": self.sb_recent_days.value(),
+            "agg_values": self.agg_values,
+            "hl_values": self.hl_values
         }
         if self.agg_setting_widget:
             settings["agg_val"] = self.active_agg.get_setting_value(self.agg_setting_widget)
@@ -446,6 +566,15 @@ class GridWidget(QWidget):
             if filtered_rows: df_to_process = pd.DataFrame(filtered_rows)
 
         if df_to_process.empty: self.grid.clear(); return
+
+        if self.chk_recent.isChecked():
+            days = self.sb_recent_days.value()
+            cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days)
+            df_to_process = df_to_process[df_to_process['Timestamp'] >= cutoff_date]
+            
+            if df_to_process.empty:
+                self.grid.clear()
+                return
 
         if self.current_axis == "Sens" or self.is_playlist_mode: 
             df_to_process['ActiveAxis'] = df_to_process['Sens']
